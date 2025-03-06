@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Unlicense
-pragma solidity ^0.8.15;
+pragma solidity >=0.8.0 <0.9.0;
 
 import "forge-std/Test.sol";
 import "forge-std/console.sol";
@@ -44,7 +44,7 @@ contract WeirollTest is Test, Events, CallBuilder {
 
         uint256 gasUsed = 1;
         uint256 gas = 1;
-        
+
         // encode weiroll calls
         for (uint256 i = 0; i < 30; i++) {
             planner.staticCall(address(math), math.add.selector);
@@ -64,11 +64,11 @@ contract WeirollTest is Test, Events, CallBuilder {
         for (uint256 i = 0; i < 30; i++) {
             calldatas.push(abi.encodeWithSelector(math.add.selector, a, b));
             targets.push(address(math));
-            offsets.push(staticCall(0x44, 0x20));
+            offsets.push(staticCall(0x4, 0x20));
 
             calldatas.push(abi.encodeWithSelector(events.logUint.selector, 0x0));
             targets.push(address(events));
-            offsets.push(call(0x0));
+            offsets.push(stateChangingCall(0x0));
         }
         gas = gasleft();
         multicall.execute(targets, offsets, calldatas, values);
