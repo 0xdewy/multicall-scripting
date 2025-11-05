@@ -41,8 +41,8 @@ contract CallBuilder is Constants {
     }
 
     // CALL with no msg.value and no return data
-    function stateChangingCall() internal pure returns (uint256)  {
-      return stateChangingCall(0);
+    function stateChangingCall() internal pure returns (uint256) {
+        return stateChangingCall(0);
     }
 
     // CALL with msg.value
@@ -56,7 +56,11 @@ contract CallBuilder is Constants {
     // NOTE: index of msg.value is shifted so 0 == no msg.value, 1 == first index in values array
     //      8         8           120         120
     // <calltype><valueIndex><memTarget><resultLength>
-    function stateChangingCall(uint256 msgValueIndex, uint256 memTarget, uint256 resultLength) internal pure returns (uint256 offsets) {
+    function stateChangingCall(uint256 msgValueIndex, uint256 memTarget, uint256 resultLength)
+        internal
+        pure
+        returns (uint256 offsets)
+    {
         require(msgValueIndex <= type(uint8).max, "msgValueIndex too large");
         require(memTarget <= type(uint120).max, "memTarget value too large");
         require(resultLength <= type(uint120).max, "resultLength value too large");
@@ -88,7 +92,6 @@ contract CallBuilder is Constants {
         uint256 encodedResultLengths = 0x0;
         uint256 encodedOffsets = 0x0;
 
-
         for (uint256 i = 0; i < len; i++) {
             require(memTargets[i] <= type(uint40).max, "memTarget value too large");
             require(resultLengths[i] <= type(uint16).max, "resultLength value too large");
@@ -102,11 +105,9 @@ contract CallBuilder is Constants {
         }
 
         // TODO: handle for msg.value as well
-        offsets = (STATIC_CALL_PARTIAL_RETURN_FLAG << 248) | (0x00 << 240) | encodedMemTargets << 120 | (encodedResultLengths << 72)
-            | (encodedOffsets << 24) | (returnLength << 8) | len;
+        offsets = (STATIC_CALL_PARTIAL_RETURN_FLAG << 248) | (0x00 << 240) | encodedMemTargets << 120
+            | (encodedResultLengths << 72) | (encodedOffsets << 24) | (returnLength << 8) | len;
     }
-
-
 }
 
 library VarLib {
@@ -132,14 +133,13 @@ library VarLib {
     }
 
     // Sets the start and length values for a Var
-    function withMemRange(uint callIndex, uint256 _start, uint256 _length) internal pure returns (Var memory) {
-      return Var(callIndex, _start, _length);
-
+    function withMemRange(uint256 callIndex, uint256 _start, uint256 _length) internal pure returns (Var memory) {
+        return Var(callIndex, _start, _length);
     }
 }
 
 contract Scripter is CallBuilder {
-    using VarLib for uint;
+    using VarLib for uint256;
 
     // Struct to store a single call's data
     struct Call {
@@ -186,7 +186,7 @@ contract Scripter is CallBuilder {
         // TODO: handle special return types
         bool is_special = (returnData.start != 0x0) || (old_call.memTargets.length > 0) || old_call.special;
 
-        // memTarget is an offset -- it tells you how how many bytes between return data and target memory
+        // memTarget is an offset -- how many bytes forward is this return data required to be set
         uint256 memTarget =
             (this_call.memPos + callParameter.start + 0x4) - (old_call.memPos + old_call.fnCalldata.length);
         // modify old call to store return data in position of callParameter
@@ -228,9 +228,8 @@ contract Scripter is CallBuilder {
                 offsets[i] = staticCall(memTarget, returnData);
             } else if (_call.calltype_flag == CALL_FLAG) {
                 require(!_call.special, "not yet supported");
-                uint msgValue = _call.msgValue > 0 ? values_iter + 1 : 0;
+                uint256 msgValue = _call.msgValue > 0 ? values_iter + 1 : 0;
                 if (_call.msgValue > 0) {
-                    // TODO: 
                     offsets[i] = stateChangingCall(values_iter + 1);
                     values[values_iter] = _call.msgValue;
                     values_iter++;

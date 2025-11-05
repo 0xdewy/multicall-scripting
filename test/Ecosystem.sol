@@ -1,4 +1,3 @@
-
 interface IMulticall3 {
     struct Call3Value {
         address target;

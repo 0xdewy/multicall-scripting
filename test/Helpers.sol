@@ -6,7 +6,7 @@ contract Math {
 
     function add(uint256 a, uint256 b) public pure returns (uint256) {
         unchecked {
-          return a + b;
+            return a + b;
         }
     }
 
@@ -30,23 +30,23 @@ contract Events {
 }
 
 contract Fuzzy {
-  bytes public state;
-  bytes public state2;
-  bool public booool;
+    bytes public state;
+    bytes public state2;
+    bool public booool;
 
-  function changeState(bytes calldata b) public returns (bool) {
-    state2 = state;
-    state = b;
-    return state.length != state2.length;
-  }
+    function changeState(bytes calldata b) public returns (bool) {
+        state2 = state;
+        state = b;
+        return state.length != state2.length;
+    }
 
-  function getState() public view returns (bytes  memory) {
-    return state;
-  }
+    function getState() public view returns (bytes memory) {
+        return state;
+    }
 
-  function setBool(bool a) public {
-    booool = a;
-  }
+    function setBool(bool a) public {
+        booool = a;
+    }
 }
 
 contract SimpleReturn {

@@ -38,10 +38,8 @@ contract MulticallScriptTest is Test, CallBuilder, MulticallScripter {
         // x = math.add(2,2)
         calldatas.push(abi.encodeWithSelector(Math.add.selector, 2, 2));
         targets.push(address(math));
-        // save 32 byte output 1 word + 4byte fn selector forward in call chain.
-        // save call to first parameter of following call setNum(a,b)
-        // specify offset within next call to store(setNum(a,b) == <4byte><32byte(a)><32byte(b)>)
-        // so first param is 4 bytes forward
+        // store output of static call 36 bytes ahead in call chain as second param of following math.add(a,b)
+        // <this_call><add_fn_selector><first_param><second_param>
         offsets.push(staticCall(0x24, 0x20));
 
         // y = math.add(2, x)
@@ -55,8 +53,8 @@ contract MulticallScriptTest is Test, CallBuilder, MulticallScripter {
         targets.push(address(math));
         offsets.push(stateChangingCall());
 
+        // execute calls
         multicall.execute(targets, offsets, calldatas, values);
-
         // 2 + 2 => 4 + 2 => 6
         assertEq(math.number(), 6, "failed to add numbers");
     }
@@ -75,7 +73,7 @@ contract MulticallScriptTest is Test, CallBuilder, MulticallScripter {
         assertEq(simpleReturn.getUint(), 69);
     }
 
-    function test_fuzz_simple_set_and_get(uint set) public {
+    function test_fuzz_simple_set_and_get(uint256 set) public {
         calldatas.push(abi.encodeWithSelector(SimpleReturn.getConstant.selector));
         calldatas.push(abi.encodeWithSelector(SimpleReturn.setUint.selector, 0x0));
         targets.push(address(simpleReturn));
@@ -89,7 +87,7 @@ contract MulticallScriptTest is Test, CallBuilder, MulticallScripter {
         assertEq(simpleReturn.getUint(), 69);
     }
 
-    function test_use_state_changing_call_return(uint val, uint val2) public {
+    function test_use_state_changing_call_return(uint256 val, uint256 val2) public {
         // x = setUint(val)
         calldatas.push(abi.encodeWithSelector(SimpleReturn.setUint.selector, val));
         targets.push(address(simpleReturn));
@@ -104,12 +102,12 @@ contract MulticallScriptTest is Test, CallBuilder, MulticallScripter {
         calldatas.push(abi.encodeWithSelector(SimpleReturn.setUint.selector, 0x0));
         targets.push(address(simpleReturn));
         offsets.push(stateChangingCall());
-        
+
         multicall.execute(targets, offsets, calldatas, values);
 
-        uint res;
+        uint256 res;
         unchecked {
-          res = val + val2;
+            res = val + val2;
         }
 
         assertEq(simpleReturn.getUint(), res);
@@ -264,23 +262,19 @@ contract MulticallScriptTest is Test, CallBuilder, MulticallScripter {
         targets.push(address(fuzzy));
         offsets.push(staticCall(0x04, startData.length)); // tuple is returned with each element padded to 32 bytes
 
-
         calldatas.push(abi.encodeWithSelector(Fuzzy.changeState.selector, startData));
         targets.push(address(fuzzy));
         offsets.push(stateChangingCall(0x0, 0x04, 0x20)); // tuple is returned with each element padded to 32 bytes
 
-
         calldatas.push(abi.encodeWithSelector(Fuzzy.setBool.selector, 0x0));
         targets.push(address(fuzzy));
         offsets.push(stateChangingCall());
-
 
         multicall.execute(targets, offsets, calldatas, values);
 
         assertEq(fuzzy.getState(), startData);
         assertEq(fuzzy.booool(), false);
     }
-
 
     function test_fuzz_bytes_alt(bytes calldata startData) public {
         calldatas.push(abi.encodeWithSelector(Fuzzy.changeState.selector, startData));
@@ -290,18 +284,16 @@ contract MulticallScriptTest is Test, CallBuilder, MulticallScripter {
         bytes memory newData = abi.encodeWithSignature("randomsignature(uint)", 0x69);
 
         while (newData.length == startData.length) {
-          newData = abi.encode(newData, startData);
+            newData = abi.encode(newData, startData);
         }
 
         calldatas.push(abi.encodeWithSelector(Fuzzy.changeState.selector, newData));
         targets.push(address(fuzzy));
         offsets.push(stateChangingCall(0x0, 0x04, 0x20)); // tuple is returned with each element padded to 32 bytes
 
-
         calldatas.push(abi.encodeWithSelector(Fuzzy.setBool.selector, 0x0));
         targets.push(address(fuzzy));
         offsets.push(stateChangingCall());
-
 
         multicall.execute(targets, offsets, calldatas, values);
 
@@ -309,5 +301,4 @@ contract MulticallScriptTest is Test, CallBuilder, MulticallScripter {
         assertEq(fuzzy.booool(), true);
     }
 }
-
 

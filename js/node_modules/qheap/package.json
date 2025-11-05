@@ -1,0 +1,35 @@
+{
+  "name": "qheap",
+  "version": "1.4.0",
+  "description": "binary heap priority queue",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git://github.com/andrasq/node-qheap"
+  },
+  "main": "index.js",
+  "author": {
+    "name": "Andras",
+    "url": "http://github.com/andrasq"
+  },
+  "engines": {
+    "node": "*"
+  },
+  "scripts": {
+    "test": "qnit -t 10000 test/test-*",
+    "coverage": "env NODE_COVERAGE=1 nyc --reporter lcov --reporter text npm test",
+    "clean": "rm -rf .nyc_output coverage"
+  },
+  "dependencies": {
+  },
+  "devDependencies": {
+    "qnit": "0.16.0",
+    "qtimeit": "0.19.0"
+  },
+  "keywords": [
+    "Andras",
+    "binary",
+    "heap",
+    "priority queue"
+  ]
+}

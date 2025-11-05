@@ -36,7 +36,9 @@ contract MulticallScripter is Constants {
             // copy all calldata to memory to be used for calls later
             // NOTE: shl(5, calldatas.length) == mul(calldatas.length, 32)
             calldatacopy(
-                calldataOffset, add(calldatas.offset, shl(5, calldatas.length)), sub(values.offset, calldatas.offset)
+                calldataOffset,
+                add(calldatas.offset, shl(5, calldatas.length)),
+                sub(values.offset, calldatas.offset)
             )
 
             // update free memory

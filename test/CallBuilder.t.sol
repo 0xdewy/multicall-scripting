@@ -10,7 +10,7 @@ import {UniV2, IUniswapV2Pair, IMulticall3} from "./Ecosystem.sol";
 
 contract MulticallScriptTest is Test, CallBuilder, MulticallScripter, UniV2 {
     using VarLib for VarLib.Var;
-    using VarLib for uint;
+    using VarLib for uint256;
 
     MulticallScripter multicall;
     Scripter scripter;
@@ -55,7 +55,6 @@ contract MulticallScriptTest is Test, CallBuilder, MulticallScripter, UniV2 {
     // swap on v2 directly, using multicall scripter
     // weth.deposit() -> weth.transfer(univ2, amt) -> univ2.swap();
     function test_mint_weth_and_swap() public {
-
         address pair = getPair(WETH, DAI);
         uint256 amount_out = getAmountOut(pair, ETH_AMT, WETH, DAI);
         (uint256 amount_0, uint256 amount_1) = WETH > DAI ? (amount_out, uint256(0)) : (uint256(0), amount_out);
@@ -90,9 +89,8 @@ contract MulticallScriptTest is Test, CallBuilder, MulticallScripter, UniV2 {
 
         IMulticall3.Call3Value[] memory calls = new IMulticall3.Call3Value[](3);
         calls[0] = IMulticall3.Call3Value(WETH, false, ETH_AMT, abi.encodeWithSignature("deposit()"));
-        calls[1] = IMulticall3.Call3Value(
-            WETH, false, 0, abi.encodeWithSignature("transfer(address,uint256)", pair, ETH_AMT)
-        );
+        calls[1] =
+            IMulticall3.Call3Value(WETH, false, 0, abi.encodeWithSignature("transfer(address,uint256)", pair, ETH_AMT));
         calls[2] = IMulticall3.Call3Value(
             pair,
             false,
