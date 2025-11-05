@@ -13,3 +13,6 @@ docs/
 # Dotenv file
 .env
 .aider*
+
+js/node_modules/
+node_modules
