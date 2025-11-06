@@ -18,9 +18,7 @@ contract Constants {
 
 contract MulticallScripter is Constants {
     /*
-        Set all calls in memory and use return data in subsequent calls
-        TODO: is it possible to avoid storing byte array lengths in memory
-
+      Execute a sequence of calls with the ability to use return data in subsequent calls
     */
     function execute(
         address[] calldata targets,
@@ -32,23 +30,19 @@ contract MulticallScripter is Constants {
         // [length(dataOffset), offset1, offset2, length1, data1, length2, data2]
         assembly {
             let calldataOffset := mload(0x40)
+            let totalCalldataBits := sub(values.offset, calldatas.offset)
 
             // copy all calldata to memory to be used for calls later
             // NOTE: shl(5, calldatas.length) == mul(calldatas.length, 32)
-            calldatacopy(
-                calldataOffset,
-                add(calldatas.offset, shl(5, calldatas.length)),
-                sub(values.offset, calldatas.offset)
-            )
+            calldatacopy(calldataOffset, add(calldatas.offset, shl(5, calldatas.length)), totalCalldataBits)
 
             // update free memory
-            mstore(0x40, add(calldataOffset, sub(values.offset, calldatas.offset)))
+            mstore(0x40, add(calldataOffset, totalCalldataBits))
 
             let i := 0
             // loop through all calls and execute in order
             for {} lt(i, calldatas.length) { i := add(i, 1) } {
                 // TODO: inline these vars to improve runtime cost
-
                 // shl(5,i) == mul(i, 32)
                 let target := calldataload(add(targets.offset, shl(5, i)))
                 let offset := calldataload(add(offsets.offset, shl(5, i)))

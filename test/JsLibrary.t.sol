@@ -35,7 +35,93 @@ contract JsLibrary is Test, CallBuilder, MulticallScripter {
         fuzzy = new Fuzzy();
     }
 
+    // set tuple(max, max, max) -> get_tuple_constants -> (1, 2, 3) -> setTuple(1, max, 3)
+    function test_js_partial_return_data() public {
+        // set_tuple(max, max, max)
+        bytes memory set_tuple_first_calldata = abi.encodeWithSelector(
+            DynamicReturn.setTuple.selector, type(uint256).max, type(uint256).max, type(uint256).max
+        );
+        // get tuple constants() -> (1, 2, 3)
+        bytes memory partial_return_static_call = abi.encodeWithSelector(DynamicReturn.getTupleConstant.selector);
+        // set_tuple(1, max, 3)
+        bytes memory set_tuple_second_calldata =
+            abi.encodeWithSelector(DynamicReturn.setTuple.selector, uint256(0), type(uint256).max, uint256(0));
+        // ===============set_tuple=======================
+        calldatas.push(set_tuple_first_calldata);
+        targets.push(address(dynamicReturn));
+        offsets.push(stateChangingCall());
+        // ===============get_tuple_constants=======================
+        calldatas.push(partial_return_static_call);
+        targets.push(address(dynamicReturn));
+        // 3 parameters from the last parameter
+        //  <4byte_selector><tuple_data_offset><tuple_length><item0><item1><item2>
+        uint256 next_call_data_start = set_tuple_second_calldata.length - 0x60;
+        assertEq(next_call_data_start, 0x04);
+        // where in next call to use
+        memTargets.push(0x04); // pos 1
+        memTargets.push(0x04 + 0x40); // pos 3
+        // where in current call to fetch data
+        returnOffsets.push(0x0); // first item
+        returnOffsets.push(0x40); // third item
+        resultLengths.push(0x20); // uint256
+        resultLengths.push(0x20); // uint256
+        offsets.push(staticCallPartialReturn(memTargets, resultLengths, returnOffsets, 0x60));
+        // ==================set_tuple=================================
+        calldatas.push(set_tuple_second_calldata);
+        targets.push(address(dynamicReturn));
+        offsets.push(stateChangingCall(0x0));
+
+        // ==========================Javascript=========================
+        string memory targetAddr = vm.toString(address(dynamicReturn));
+        uint256 maxUint = type(uint256).max;
+
+        string memory callsJson = string(
+            abi.encodePacked(
+                "[",
+                // Call 0: setTuple(max, max, max)
+                '{"abiPath":"out/Helpers.sol/DynamicReturn.json","target":"',
+                targetAddr,
+                '",',
+                '"functionName":"setTuple","args":[',
+                vm.toString(maxUint),
+                ",",
+                vm.toString(maxUint),
+                ",",
+                vm.toString(maxUint),
+                '],"value":0},',
+                // Call 1: getTupleConstant() - will return (1, 2, 3)
+                '{"abiPath":"out/Helpers.sol/DynamicReturn.json","target":"',
+                targetAddr,
+                '",',
+                '"functionName":"getTupleConstant","args":[],"value":0},',
+                // Call 2: setTuple(first_item, max, third_item)
+                '{"abiPath":"out/Helpers.sol/DynamicReturn.json","target":"',
+                targetAddr,
+                '",',
+                '"functionName":"setTuple","args":[',
+                '{"callIndex":1,"offset":0,"size":32},', // First item (offset 0)
+                vm.toString(maxUint),
+                ",", // max uint
+                '{"callIndex":1,"offset":64,"size":32}', // Third item (offset 64)
+                '],"value":0}',
+                "]"
+            )
+        );
+
+        // Call JavaScript builder
+        (address[] memory targets, uint256[] memory offsets, bytes[] memory calldatas,) =
+            callJavaScriptBuilder(callsJson);
+        // ===================execute=================================
+        multicall.execute(targets, offsets, calldatas, values);
+
+        (uint256 a, uint256 b, uint256 c) = dynamicReturn.tuple();
+        assertEq(a, 1);
+        assertEq(b, type(uint256).max);
+        assertEq(c, 3);
+    }
+
     function test_simple_usage_js() public {
+        // ===================================Solidity=========================================
         // x = math.add(2,2)
         calldatas.push(abi.encodeWithSelector(Math.add.selector, 2, 2));
         targets.push(address(math));
@@ -54,6 +140,7 @@ contract JsLibrary is Test, CallBuilder, MulticallScripter {
         targets.push(address(math));
         offsets.push(stateChangingCall());
 
+        // ============================================JS=========================================
         string memory callsJson = string(
             abi.encodePacked(
                 "[",
@@ -82,21 +169,12 @@ contract JsLibrary is Test, CallBuilder, MulticallScripter {
             )
         );
 
-        // Call JavaScript library using FFI
-        string[] memory inputs = new string[](3);
-        inputs[0] = "bun";
-        inputs[1] = "js/cli.js";
-        inputs[2] = callsJson;
-
-        bytes memory result = vm.ffi(inputs);
-
-        // Parse the result from JavaScript
         (
             address[] memory jsTargets,
             uint256[] memory jsOffsets,
             bytes[] memory jsCalldatas,
             uint256[] memory jsValues
-        ) = parseBuilderResult(result);
+        ) = callJavaScriptBuilder(callsJson);
 
         for (uint256 i = 0; i < offsets.length; i++) {
             assertEq(offsets[i], jsOffsets[i], "offsets do not match");
@@ -104,7 +182,7 @@ contract JsLibrary is Test, CallBuilder, MulticallScripter {
             assertEq(calldatas[i], jsCalldatas[i], "calldatas do not match");
         }
         for (uint256 i = 0; i < values.length; i++) {
-          assertEq(values[i], jsValues[i]);
+            assertEq(values[i], jsValues[i]);
         }
 
         // execute calls
@@ -112,6 +190,20 @@ contract JsLibrary is Test, CallBuilder, MulticallScripter {
         multicall.execute(jsTargets, jsOffsets, jsCalldatas, jsValues);
         // 2 + 2 => 4 + 2 => 6
         assertEq(math.number(), 6, "failed to add numbers");
+    }
+
+    // Helper fn to call the javascript library
+    function callJavaScriptBuilder(string memory callsJson)
+        internal
+        returns (address[] memory targets, uint256[] memory offsets, bytes[] memory calldatas, uint256[] memory values)
+    {
+        string[] memory inputs = new string[](3);
+        inputs[0] = "bun";
+        inputs[1] = "js/cli.js";
+        inputs[2] = callsJson;
+
+        bytes memory result = vm.ffi(inputs);
+        (targets, offsets, calldatas, values) = parseBuilderResult(result);
     }
 
     function parseBuilderResult(bytes memory result)

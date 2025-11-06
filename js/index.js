@@ -5,11 +5,8 @@ const { encodeFunctionData, getAbiItem } = require("viem");
 export const PARTIAL_RETURN_VARS = BigInt(3);
 export const STATIC_CALL_FLAG = BigInt(0xff);
 export const CALL_FLAG = BigInt(0xfe);
-//export const DELEGATE_CALL_FLAG = BigInt(0xfd);
+export const DELEGATE_CALL_FLAG = BigInt(0xfd);
 export const STATIC_CALL_PARTIAL_RETURN_FLAG = BigInt(0xfc);
-export const PARTIAL_RETURN_MEM_TARGET_FLAG_INDIVIDUAL = BigInt(0xffffffffff); // uint40 max
-export const PARTIAL_RETURN_RES_LENGTH_FLAG = BigInt(0xffffffffffff); // uint48 max, though function uses uint16
-export const PARTIAL_RETURN_RET_OFFSET_FLAG = BigInt(0xffffffffffff); // uint48 max, though function uses uint16
 export const VALUE_OFFSET = BigInt(248);
 
 const UINT120_MAX = BigInt(2 ** 120 - 1);
@@ -58,19 +55,18 @@ export class TransactionBuilder {
         "value" in arg
       ) {
         const prevCall = this.calls[arg.callIndex];
-
         // Multiple outputs not yet supported
         if (prevCall.memTargets.length > 0 || prevCall.special) {
           // TODO: doesn't need special multiple output if the return vals can be used in the same order (treat as 1 var)
           throw Error("Multiple return values not implemented");
         }
 
-        // memTarget = (current_call.memPos + parameter.start + 0x4) - (prev_call.memPos + prev_call.fnCalldata.length)
+        // where the previous call output is going to be placed
         const paramMemoryPosition = this.freeMemory + 4 + 32 * index;
-
+        // memory boundary of previous call
         const sourceMemoryPosition =
           prevCall.freeMemory + prevCall.fnCalldata.length / 2;
-
+        // offset - how far forward in bits the output needs to be saved
         const returnOffset = paramMemoryPosition - sourceMemoryPosition;
 
         // Update previous call to return data at the calculated offset
