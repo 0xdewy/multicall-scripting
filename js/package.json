@@ -8,7 +8,6 @@
     "build": "node cli.js"
   },
   "dependencies": {
-    "@weiroll/weiroll.js": "git@github.com:weiroll/weiroll.js.git",
     "abitype": "^1.0.8",
     "tevm": "^1.0.0-next.147",
     "viem": "^2.32.1"

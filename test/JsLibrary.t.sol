@@ -54,28 +54,34 @@ contract JsLibrary is Test, CallBuilder, MulticallScripter {
         targets.push(address(math));
         offsets.push(stateChangingCall());
 
-string memory callsJson = string(abi.encodePacked(
-        '[',
-        '{"abiPath":"out/Math.sol/Math.json",',
-        '"target":"', vm.toString(address(math)), '",',
-        '"functionName":"add",',
-        '"args":[2,2],',
-        '"value":0},',
-        '{"abiPath":"out/Math.sol/Math.json",',
-        '"target":"', vm.toString(address(math)), '",',
-        '"functionName":"add",',
-        // Pass the output object directly (not wrapped)
-        '"args":[2,{"callIndex":0,"type":"uint256","value":0,"offset":0}],',
-        '"value":0},',
-        '{"abiPath":"out/Math.sol/Math.json",',
-        '"target":"', vm.toString(address(math)), '",',
-        '"functionName":"setNum",',
-        // Pass the output object directly (not wrapped)  
-        '"args":[{"callIndex":1,"type":"uint256","value":0,"offset":0}],',
-        '"value":0}',
-        ']'
-    ));
-       
+        string memory callsJson = string(
+            abi.encodePacked(
+                "[",
+                '{"abiPath":"out/Math.sol/Math.json",',
+                '"target":"',
+                vm.toString(address(math)),
+                '",',
+                '"functionName":"add",',
+                '"args":[2,2],',
+                '"value":0},',
+                '{"abiPath":"out/Math.sol/Math.json",',
+                '"target":"',
+                vm.toString(address(math)),
+                '",',
+                '"functionName":"add",',
+                '"args":[2,{"callIndex":0,"type":"uint256","value":0,"offset":0,"size":32}],',
+                '"value":0},',
+                '{"abiPath":"out/Math.sol/Math.json",',
+                '"target":"',
+                vm.toString(address(math)),
+                '",',
+                '"functionName":"setNum",',
+                '"args":[{"callIndex":1,"type":"uint256","value":0,"offset":0,"size":32}],',
+                '"value":0}',
+                "]"
+            )
+        );
+
         // Call JavaScript library using FFI
         string[] memory inputs = new string[](3);
         inputs[0] = "bun";
@@ -92,29 +98,34 @@ string memory callsJson = string(abi.encodePacked(
             uint256[] memory jsValues
         ) = parseBuilderResult(result);
 
-        for (uint i = 0; i < offsets.length; i++) {
-          assertEq(offsets[i], jsOffsets[i], "offsets do not match");
+        for (uint256 i = 0; i < offsets.length; i++) {
+            assertEq(offsets[i], jsOffsets[i], "offsets do not match");
+            assertEq(targets[i], jsTargets[i], "targets do not match");
+            assertEq(calldatas[i], jsCalldatas[i], "calldatas do not match");
+        }
+        for (uint256 i = 0; i < values.length; i++) {
+          assertEq(values[i], jsValues[i]);
         }
 
         // execute calls
-        multicall.execute(targets, offsets, calldatas, values);
+        // multicall.execute(targets, offsets, calldatas, values);
+        multicall.execute(jsTargets, jsOffsets, jsCalldatas, jsValues);
         // 2 + 2 => 4 + 2 => 6
         assertEq(math.number(), 6, "failed to add numbers");
     }
 
-    function parseBuilderResult(bytes memory result) internal view returns (
-    address[] memory targets,
-    uint256[] memory offsets, 
-    bytes[] memory calldatas,
-    uint256[] memory values
-) {
-    string memory resultStr = string(result);
-    
-    targets = stdJson.readAddressArray(resultStr, ".targets");
-    offsets = stdJson.readUintArray(resultStr, ".offsets");
-    calldatas = stdJson.readBytesArray(resultStr, ".calldatas");
-    
-    // Return empty values array since we're not using ETH transfers
-    values = new uint256[](0);
-}
+    function parseBuilderResult(bytes memory result)
+        internal
+        view
+        returns (address[] memory targets, uint256[] memory offsets, bytes[] memory calldatas, uint256[] memory values)
+    {
+        string memory resultStr = string(result);
+
+        targets = stdJson.readAddressArray(resultStr, ".targets");
+        offsets = stdJson.readUintArray(resultStr, ".offsets");
+        calldatas = stdJson.readBytesArray(resultStr, ".calldatas");
+
+        // Return empty values array since we're not using ETH transfers
+        values = new uint256[](0);
+    }
 }

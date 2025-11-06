@@ -1,12 +1,11 @@
 // Import required functions from viem
 const { encodeFunctionData, getAbiItem } = require("viem");
-const fs = require("fs");
 
 // Constants from the Constants.sol
 export const PARTIAL_RETURN_VARS = BigInt(3);
 export const STATIC_CALL_FLAG = BigInt(0xff);
 export const CALL_FLAG = BigInt(0xfe);
-export const DELEGATE_CALL_FLAG = BigInt(0xfd); // Not used in the provided functions but included for completeness
+//export const DELEGATE_CALL_FLAG = BigInt(0xfd);
 export const STATIC_CALL_PARTIAL_RETURN_FLAG = BigInt(0xfc);
 export const PARTIAL_RETURN_MEM_TARGET_FLAG_INDIVIDUAL = BigInt(0xffffffffff); // uint40 max
 export const PARTIAL_RETURN_RES_LENGTH_FLAG = BigInt(0xffffffffffff); // uint48 max, though function uses uint16
@@ -25,6 +24,7 @@ export class TransactionBuilder {
   }
 
   // Add a call to the script
+  // TODO: support overriding the calltype (static/call)
   addCall(abi, target, functionName, args, msgValue = BigInt(0)) {
     // Resolve arguments for ABI lookup, handling CallOutput objects
     const functionAbi = getAbiItem({
@@ -41,6 +41,7 @@ export class TransactionBuilder {
     }
 
     // Determine call type based on function state mutability
+    // TODO: allow user to modify this
     const callType =
       functionAbi.stateMutability === "view" ||
       functionAbi.stateMutability === "pure"
@@ -60,18 +61,22 @@ export class TransactionBuilder {
 
         // Multiple outputs not yet supported
         if (prevCall.memTargets.length > 0 || prevCall.special) {
+          // TODO: doesn't need special multiple output if the return vals can be used in the same order (treat as 1 var)
           throw Error("Multiple return values not implemented");
         }
 
-        // Calculate memory positions and offset
-        // TODO: add argumet offset here??
+        // memTarget = (current_call.memPos + parameter.start + 0x4) - (prev_call.memPos + prev_call.fnCalldata.length)
         const paramMemoryPosition = this.freeMemory + 4 + 32 * index;
+
         const sourceMemoryPosition =
           prevCall.freeMemory + prevCall.fnCalldata.length / 2;
+
         const returnOffset = paramMemoryPosition - sourceMemoryPosition;
 
         // Update previous call to return data at the calculated offset
         prevCall.memTargets.push(returnOffset);
+        prevCall.returnDataLens.push(arg.size);
+        prevCall.returnDataOffsets.push(arg.offset);
 
         return arg.value;
       }
@@ -86,54 +91,39 @@ export class TransactionBuilder {
       args: resolvedArgs,
     });
 
-    // Update memory pointer (fnCalldata is a hex string, so length / 2 gives byte count)
-    const freeMemory = this.freeMemory;
-    this.freeMemory += fnCalldata.length / 2;
-
-    // TODO: check for special/multiple return values
     // Create call object
-    const call = {
+    this.calls.push({
       target,
       fnCalldata,
       calltype_flag: callType,
-      freeMemory,
+      freeMemory: this.freeMemory,
       memTargets: [],
       returnDataLens: [],
       returnDataOffsets: [],
       msgValue,
       special: false,
-    };
-    this.calls.push(call);
-    const callIndex = this.calls.length - 1;
+    });
 
-    // Generate output object based on function ABI outputs
-    let offset = 0;
-    const outputs = [];
+    // Update memory pointer (fnCalldata is a hex string, so length / 2 gives byte count)
+    this.freeMemory += fnCalldata.length / 2;
 
-    for (const output of functionAbi.outputs) {
-      let value;
-      let offsetAdded = 32; // Most types use 32 bytes
+    // TODO: support all types
+    const outputs = functionAbi.outputs.map((output, i) => {
+      let value =
+        output.type === "address"
+          ? "0x0000000000000000000000000000000000000000"
+          : output.type === "bool"
+            ? false
+            : 0;
 
-      switch (output.type) {
-        case "address":
-          value = "0x0000000000000000000000000000000000000000";
-          break;
-        case "uint256":
-        case "int256":
-          value = 0;
-          break;
-        case "bool":
-          value = false;
-          break;
-        case "string":
-        case "bytes":
-        default:
-          throw new Error(`Type not supported: ${output.type}`);
-      }
-
-      outputs.push({ callIndex, type: output.type, value, offset });
-      offset += offsetAdded;
-    }
+      return {
+        callIndex: this.calls.length - 1,
+        type: output.type,
+        value,
+        offset: i * 32,
+        size: 32,
+      };
+    });
 
     return outputs;
   }
@@ -150,14 +140,14 @@ export class TransactionBuilder {
       targets.push(_call.target);
       calldatas.push(_call.fnCalldata);
 
-      let memTarget = _call.memTargets.length > 0 ? _call.memTargets[0] : 0;
-      let returnData =
-        _call.returnDataLens.length > 0 ? _call.returnDataLens[0] : 0;
-
       // Use multiple output values
       if (_call.special) {
         throw Error("multiple output usage not yet implemented in js");
       }
+
+      let memTarget = _call.memTargets.length > 0 ? _call.memTargets[0] : 0;
+      let returnData =
+        _call.returnDataLens.length > 0 ? _call.returnDataLens[0] : 0;
 
       // Encode msgvalue and calltype
       if (_call.calltype_flag == STATIC_CALL_FLAG) {
@@ -177,42 +167,26 @@ export class TransactionBuilder {
   }
 }
 
+// ===========================================Helpers===========================================
+
 // staticCall: Emulates a static call with memory target and result length
 // <calltype><valueIndex><memTarget><resultLength>
 export function staticCall(memTarget, resultLength) {
   memTarget = BigInt(memTarget);
   resultLength = BigInt(resultLength);
-
-  // Input validation
-  if (memTarget > UINT120_MAX) {
-    throw new Error("memTarget value too large");
-  }
-  if (resultLength > UINT120_MAX) {
-    throw new Error("resultLength value too large");
-  }
-
-  // Bitwise operations to pack data
-  // calltype (8 bits) | valueIndex (8 bits, 0 for static call) | memTarget (120 bits) | resultLength (120 bits)
-  const offsets =
-    (STATIC_CALL_FLAG << VALUE_OFFSET) |
-    (BigInt(0) << BigInt(240)) | // valueIndex = 0 for static calls
-    (memTarget << BigInt(120)) |
-    resultLength;
-
+  const calltypePart = STATIC_CALL_FLAG << VALUE_OFFSET;
+  const memTargetPart = memTarget << BigInt(120);
+  const resultLengthPart = resultLength;
+  const offsets = calltypePart | memTargetPart | resultLengthPart;
   return offsets;
 }
 
-// stateChangingCall: Overload with no parameters (msgValueIndex = 0)
+// stateChangingCall
 export function stateChangingCall(msgValueIndex = 0) {
-  return stateChangingCallWithParams(msgValueIndex, 0, 0);
+  return _stateChangingCall(msgValueIndex, 0, 0);
 }
 
-// stateChangingCall: Overload with msgValueIndex, memTarget, and resultLength
-export function stateChangingCallWithParams(
-  msgValueIndex,
-  memTarget,
-  resultLength,
-) {
+function _stateChangingCall(msgValueIndex, memTarget, resultLength) {
   msgValueIndex = BigInt(msgValueIndex);
   memTarget = BigInt(memTarget);
   resultLength = BigInt(resultLength);
@@ -228,7 +202,6 @@ export function stateChangingCallWithParams(
     throw new Error("resultLength value too large");
   }
 
-  // Bitwise operations to pack data
   // <calltype><valueIndex><memTarget><resultLength>
   // calltype (8 bits) | valueIndex (8 bits) | memTarget (120 bits) | resultLength (120 bits)
   const offsets =
@@ -240,7 +213,7 @@ export function stateChangingCallWithParams(
   return offsets;
 }
 
-// staticCallPartialReturn: Handles partial return data with multiple variables
+// staticCallPartialReturn: To make a static call and use multiple return vars
 export function staticCallPartialReturn(
   memTargets,
   resultLengths,
@@ -302,57 +275,4 @@ export function staticCallPartialReturn(
     BigInt(len);
 
   return offsets;
-}
-
-export function loadABI(abiPath) {
-  try {
-    // Simple Bun-compatible file reading - no path module needed
-    const abiContent = fs.readFileSync(abiPath, "utf8");
-    const artifact = JSON.parse(abiContent);
-
-    // Handle both direct ABI arrays and Foundry artifacts
-    if (Array.isArray(artifact)) {
-      return artifact; // Direct ABI array
-    } else if (artifact.abi) {
-      return artifact.abi; // Foundry artifact with ABI property
-    } else {
-      throw new Error(`Invalid ABI format in ${abiPath}`);
-    }
-  } catch (error) {
-    // If relative path fails, try with ./ prefix
-    try {
-      const altPath = `./${abiPath}`;
-      const abiContent = fs.readFileSync(altPath, "utf8");
-      const artifact = JSON.parse(abiContent);
-
-      if (Array.isArray(artifact)) {
-        return artifact;
-      } else if (artifact.abi) {
-        return artifact.abi;
-      } else {
-        throw new Error(`Invalid ABI format in ${altPath}`);
-      }
-    } catch (error2) {
-      throw new Error(`Failed to load ABI from ${abiPath}: ${error.message}`);
-    }
-  }
-}
-
-export function addCallsAndBuild(calls) {
-  const transactionBuilder = new TransactionBuilder();
-
-  for (const call of calls) {
-    // Load ABI from file path
-    const abi = loadABI(call.abiPath);
-
-    transactionBuilder.addCall(
-      abi,
-      call.target,
-      call.functionName,
-      call.args,
-      call.value ? BigInt(call.value) : BigInt(0),
-    );
-  }
-
-  return transactionBuilder.build();
 }
