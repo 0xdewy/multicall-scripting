@@ -58,6 +58,8 @@ export function addCallsAndBuild(calls) {
       return arg;
     });
 
+    console.log("processed args: ", processedArgs);
+
     transactionBuilder.addCall(
       abi,
       call.target,

@@ -38,7 +38,7 @@ export class TransactionBuilder {
     }
 
     // Determine call type based on function state mutability
-    // TODO: allow user to modify this
+    // TODO: allow user to modify calltype
     const callType =
       functionAbi.stateMutability === "view" ||
       functionAbi.stateMutability === "pure"
@@ -62,10 +62,11 @@ export class TransactionBuilder {
         }
 
         // where the previous call output is going to be placed
+        // current_offset + 4 byte selector + (32 * index)
         const paramMemoryPosition = this.freeMemory + 4 + 32 * index;
         // memory boundary of previous call
         const sourceMemoryPosition =
-          prevCall.freeMemory + prevCall.fnCalldata.length / 2;
+          prevCall.freeMemory + (prevCall.fnCalldata.length / 2);
         // offset - how far forward in bits the output needs to be saved
         const returnOffset = paramMemoryPosition - sourceMemoryPosition;
 
