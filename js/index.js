@@ -1,20 +1,20 @@
 // Import required functions from viem
 const { encodeFunctionData, getAbiItem } = require("viem");
 
-// Constants
-const PARTIAL_RETURN_VARS = 3n;
-const STATIC_CALL_FLAG = 0xffn;
-const CALL_FLAG = 0xfen;
-const DELEGATE_CALL_FLAG = 0xfdn;
-const STATIC_CALL_PARTIAL_RETURN_FLAG = 0xfcn;
-const VALUE_OFFSET = 248n;
+// Constants from the Constants.sol
+export const PARTIAL_RETURN_VARS = BigInt(3);
+export const STATIC_CALL_FLAG = BigInt(0xff);
+export const CALL_FLAG = BigInt(0xfe);
+export const DELEGATE_CALL_FLAG = BigInt(0xfd);
+export const STATIC_CALL_PARTIAL_RETURN_FLAG = BigInt(0xfc);
+export const VALUE_OFFSET = BigInt(248);
 
-const UINT120_MAX = (2n ** 120n) - 1n;
-const UINT8_MAX = 255n;
-const UINT40_MAX = (2n ** 40n) - 1n;
-const UINT16_MAX = (2n ** 16n) - 1n;
+const UINT120_MAX = BigInt(2 ** 120 - 1);
+const UINT8_MAX = BigInt(255);
+const UINT40_MAX = BigInt(2 ** 40 - 1);
+const UINT16_MAX = BigInt(2 ** 16 - 1);
 
-class TransactionBuilder {
+export class TransactionBuilder {
   constructor() {
     this.calls = []; // Array to store call objects
     this.freeMemory = 0; // Memory pointer
@@ -51,67 +51,41 @@ class TransactionBuilder {
       throw new Error(`Number of arguments do not match abi arguments ${args.length} vs ${functionAbi.inputs.length}`);
     }
 
-    // Process arguments to handle types and dynamic data
-    const processedArgs = [];
-    for (let i = 0; i < functionAbi.inputs.length; i++) {
-      const abiInput = functionAbi.inputs[i];
-      const arg = args[i];
-      
-      // Check if the type is dynamic
-      const isDynamic = abiInput.type === "string" || 
-                        abiInput.type === "bytes" || 
-                        abiInput.type.endsWith("[]");
-      
-      // For call output references (objects with callIndex), we need to handle them specially
-      // They will be processed in the Argument Memory Offsets section
-      if (arg && typeof arg === "object" && "callIndex" in arg) {
-        // For now, we can push a placeholder value
-        // The actual value will be filled in during execution
-        processedArgs.push(0n);
-        continue;
+    // Make sure dynamic data has been manually input
+    functionAbi.inputs.zip(args).forEach((abiInput, arg) => {
+      // TODO: add support in contract to parse dynamic data properly
+      if (arg.requiresResizing) {
+        throw new Error(`Does not support multiple dynamic outputs yet`);
       }
-      
-      // Validate dynamic types
-      if (isDynamic) {
-        if (!arg) {
-          throw new Error(`Must define the value of dynamic arguments. Type: ${abiInput.type} Name: ${abiInput.name}`);
-        }
+      // Dynamic types must be input properly
+      if (isDynamicData(abiInput)) {
+          if (!arg.value) {
+            throw new Error(`Must define the value of dynamic arguments. Type: ${abiInput.type} Name: ${abiInput.name}`);
+          }
+          // TODO: properly parse bytes/string
+          // resize argument based on user input
+          arg.size = arg.value.length / 2;
       }
-      
-      // Process the argument value
-      let processedValue = arg;
-      
-      // Convert to BigInt for integer types and addresses
-      if (abiInput.type.includes("int") || abiInput.type === "address") {
-        // Handle hex strings
-        if (typeof processedValue === "string" && processedValue.startsWith("0x")) {
-          processedValue = BigInt(processedValue);
-        } else if (typeof processedValue === "string" && /^\d+$/.test(processedValue)) {
-          processedValue = BigInt(processedValue);
-        } else if (typeof processedValue === "number") {
-          processedValue = BigInt(processedValue);
-        }
-        // Ensure it's a BigInt
-        if (typeof processedValue !== "bigint") {
-          processedValue = BigInt(processedValue);
-        }
+    });
+
+    // Extract raw value and parse to BigInt if needed
+    const processedArgs = functionAbi.inputs.zip(args).map((abiInput, arg) => {
+      // Extract raw value from argument
+      let baseValue = (arg && typeof arg === "object" && "callIndex" in arg) ? arg.value : arg;
+
+      if (abiInput.type.contains("int")) {
+        return BigInt(baseValue);
       }
-      
-      processedArgs.push(processedValue);
-    }
+        
+      return baseValue;
+    });
 
     // =============================== Argument Memory Offsets ===========================================
     // Update where the previous call is saving its output if one of the args is from a previous call
-    for (let index = 0; index < args.length; index++) {
-      const arg = args[index];
+    args.forEach((arg, index) => {
       // Check if this argument references a previous call's output
       if (arg && typeof arg === "object" && "callIndex" in arg) {
-        // Parse numeric fields
-        const callIndex = Number(arg.callIndex);
-        const offset = Number(arg.offset || 0);
-        const size = Number(arg.size || 32);
-        
-        const prevCall = this.calls[callIndex];
+        const prevCall = this.calls[arg.callIndex];
         // Multiple outputs not yet supported
         if (prevCall.memTargets.length > 0 || prevCall.special) {
           // TODO: doesn't need special multiple output if the return vals can be used in the same order (treat as 1 var)
@@ -129,10 +103,10 @@ class TransactionBuilder {
 
         // Update previous call to return data at the calculated offset
         prevCall.memTargets.push(returnOffset);
-        prevCall.returnDataLens.push(size);
-        prevCall.returnDataOffsets.push(offset);
+        prevCall.returnDataLens.push(arg.size);
+        prevCall.returnDataOffsets.push(arg.offset);
       }
-    }
+    });
 
     // =============================== Encode Skeleton Calldata===========================================
     // Encode function call data
@@ -161,10 +135,12 @@ class TransactionBuilder {
 
 
     // =============================== Build Outputs ===========================================
+      // TODO: need to use special call to handle dynamic data safely
     // Calculate offsets for each output, considering dynamic types
     let staticOffset = 0;
-    // Start dynamic data after all static slots
-    let dynamicOffset = functionAbi.outputs.length * 32;
+ // Start dynamic data after all static slots and add 32 to account for the length slot
+    let dynamicOffsetStart = functionAbi.outputs.length * 32 + 32;
+    let dynamicOffset = dynamicOffsetStart; // Start dynamic data after all static slots
     const outputs = [];
   
     for (let i = 0; i < functionAbi.outputs.length; i++) {
@@ -179,7 +155,7 @@ class TransactionBuilder {
       } else {
         value = 0;
       }
-      // Check if the type is dynamic
+      // Dynamic types store an offset to the actual start of their data
       const isDynamic = output.type === "string" || 
                         output.type === "bytes" || 
                         output.type.endsWith("[]");
@@ -197,8 +173,8 @@ class TransactionBuilder {
         size = 32;
         staticOffset += 32;
       }
-      // Check if sizing is required
-      let requiresSizing = isDynamic;
+      // Does this have a dynamic variable earlier in the output that effects its offset?
+      let requiresSizing = dynamicOffset > 32 + dynamicOffsetStart ? true : false;
       // Push the outputs
       outputs.push({
         callIndex: this.calls.length - 1, // store this for easy reference later
@@ -208,6 +184,7 @@ class TransactionBuilder {
         size: size,
         requiresSizing,
       });
+    
     }
 
     return outputs;
@@ -249,20 +226,118 @@ class TransactionBuilder {
 }
 
 
-// Helper functions
-function staticCall(memTarget, resultLength) {
-  const m = BigInt(memTarget);
-  const r = BigInt(resultLength);
-  if (m > UINT120_MAX) throw new Error("memTarget value too large");
-  if (r > UINT120_MAX) throw new Error("resultLength value too large");
-  return (STATIC_CALL_FLAG << VALUE_OFFSET) | (m << 120n) | r;
+// ===========================================Helpers===========================================
+
+// staticCall: Emulates a static call with memory target and result length
+// <calltype><valueIndex><memTarget><resultLength>
+export function staticCall(memTarget, resultLength) {
+  memTarget = BigInt(memTarget);
+  resultLength = BigInt(resultLength);
+  const calltypePart = STATIC_CALL_FLAG << VALUE_OFFSET;
+  const memTargetPart = memTarget << BigInt(120);
+  const resultLengthPart = resultLength;
+  const offsets = calltypePart | memTargetPart | resultLengthPart;
+  return offsets;
 }
 
-function stateChangingCall(msgValueIndex = 0) {
-  const mvi = BigInt(msgValueIndex);
-  if (mvi > UINT8_MAX) throw new Error("msgValueIndex too large");
-  return (CALL_FLAG << VALUE_OFFSET) | (mvi << 240n);
+// stateChangingCall
+export function stateChangingCall(msgValueIndex = 0) {
+  return _stateChangingCall(msgValueIndex, 0, 0);
 }
 
-// Export the class and functions
-module.exports = { TransactionBuilder, staticCall, stateChangingCall };
+function _stateChangingCall(msgValueIndex, memTarget, resultLength) {
+  msgValueIndex = BigInt(msgValueIndex);
+  memTarget = BigInt(memTarget);
+  resultLength = BigInt(resultLength);
+
+  // Input validation
+  if (msgValueIndex > UINT8_MAX) {
+    throw new Error("msgValueIndex too large");
+  }
+  if (memTarget > UINT120_MAX) {
+    throw new Error("memTarget value too large");
+  }
+  if (resultLength > UINT120_MAX) {
+    throw new Error("resultLength value too large");
+  }
+
+  // <calltype><valueIndex><memTarget><resultLength>
+  // calltype (8 bits) | valueIndex (8 bits) | memTarget (120 bits) | resultLength (120 bits)
+  const offsets =
+    (CALL_FLAG << VALUE_OFFSET) |
+    (msgValueIndex << BigInt(240)) |
+    (memTarget << BigInt(120)) |
+    resultLength;
+
+  return offsets;
+}
+
+// staticCallPartialReturn: To make a static call and use multiple return vars
+export function staticCallPartialReturn(
+  memTargets,
+  resultLengths,
+  returnOffsets,
+  returnLength,
+) {
+  returnLength = BigInt(returnLength);
+
+  // Input validation
+  if (
+    memTargets.length > PARTIAL_RETURN_VARS ||
+    resultLengths.length > PARTIAL_RETURN_VARS ||
+    returnOffsets.length > PARTIAL_RETURN_VARS
+  ) {
+    throw new Error("invalid number of params");
+  }
+  if (returnLength > UINT16_MAX) {
+    throw new Error("returnLength is too large");
+  }
+
+  const len = memTargets.length;
+  let encodedMemTargets = BigInt(0);
+  let encodedResultLengths = BigInt(0);
+  let encodedOffsets = BigInt(0);
+
+  // Encode arrays into packed data
+  for (let i = 0; i < len; i++) {
+    const memTarget = BigInt(memTargets[i]);
+    const resultLength = BigInt(resultLengths[i]);
+    const returnOffset = BigInt(returnOffsets[i]);
+
+    // Validate individual elements
+    if (memTarget > PARTIAL_RETURN_MEM_TARGET_FLAG_INDIVIDUAL) {
+      throw new Error("memTarget value too large");
+    }
+    if (resultLength > UINT16_MAX) {
+      throw new Error("resultLength value too large");
+    }
+    if (returnOffset > UINT16_MAX) {
+      throw new Error("returnOffset value too large");
+    }
+
+    const varOffset = Number(PARTIAL_RETURN_VARS - (i + 1));
+    encodedMemTargets |= memTarget << BigInt(varOffset * 40);
+    encodedResultLengths |= resultLength << BigInt(varOffset * 16);
+    encodedOffsets |= returnOffset << BigInt(varOffset * 16);
+  }
+
+  // Pack data into offsets
+  // <calltype><valueIndex><memTargets><resultLengths><returnOffsets><resultLength><num_vars>
+  // calltype (8 bits) | valueIndex (8 bits, 0) | memTargets (120 bits) | resultLengths (48 bits) | returnOffsets (48 bits) | resultLength (16 bits) | num_vars (8 bits)
+  const offsets =
+    (STATIC_CALL_PARTIAL_RETURN_FLAG << BigInt(248)) |
+    (BigInt(0) << BigInt(240)) | // valueIndex = 0
+    (encodedMemTargets << BigInt(120)) |
+    (encodedResultLengths << BigInt(72)) |
+    (encodedOffsets << BigInt(24)) |
+    (returnLength << BigInt(8)) |
+    BigInt(len);
+
+  return offsets;
+}
+
+function isDynamicData(abiInput) {
+
+      if (["string", "bytes"].contains(abiInput.type) || abiInput.type.contains("[]")) {
+      }
+}
