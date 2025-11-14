@@ -29,6 +29,10 @@ export class TransactionBuilder {
       if (arg && typeof arg === "object" && "callIndex" in arg) {
         return arg;
       }
+      // If it's already a BigInt, keep it
+      if (typeof arg === "bigint") {
+        return arg;
+      }
       // Handle large numbers by always treating them as BigInt if they're numbers or numeric strings
       if (typeof arg === "number" || (typeof arg === "string" && /^-?\d+$/.test(arg))) {
         try {

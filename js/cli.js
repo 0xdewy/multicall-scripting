@@ -34,13 +34,13 @@ export function addCallsAndBuild(calls) {
 
     // Process arguments using ABI types
     const processedArgs = call.args.map((arg, index) => {
-      const paramType = functionAbi.inputs[index]?.type;
       // If argument is referencing other output return as is
       if (arg && typeof arg === "object" && "callIndex" in arg) {
         return arg; // Return output reference objects as-is
       }
 
-      // Handle numbers - always try to convert to BigInt if it's a numeric string
+      // Handle large numbers by always treating them as BigInt
+      // Check if it's a numeric string (potentially very large)
       if (typeof arg === "string" && /^-?\d+$/.test(arg)) {
         try {
           return BigInt(arg);
@@ -57,16 +57,15 @@ export function addCallsAndBuild(calls) {
           return arg;
         }
       }
-      // Handle numbers directly
+      // Handle regular numbers (but these can't be very large)
       if (typeof arg === "number") {
-        return BigInt(arg);
+        return BigInt(Math.floor(arg));
       }
 
       // For addresses and other strings, keep as strings
       return arg;
     });
 
-    console.log("processed args: ", processedArgs);
 
     transactionBuilder.addCall(
       abi,
@@ -95,7 +94,18 @@ function main() {
 
   try {
     const callsJSON = args[0];
-    const calls = JSON.parse(callsJSON);
+    // Use a custom reviver to parse numbers as BigInt when they're too large
+    const calls = JSON.parse(callsJSON, (key, value) => {
+      // If the value is a number in string form that's very large, parse it as BigInt
+      if (typeof value === 'string' && /^-?\d+$/.test(value) && value.length > 15) {
+        try {
+          return BigInt(value);
+        } catch (e) {
+          return value;
+        }
+      }
+      return value;
+    });
     const result = addCallsAndBuild(calls);
 
     const serializableResult = {
