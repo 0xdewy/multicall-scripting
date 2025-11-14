@@ -4,10 +4,21 @@ const fs = require("fs");
 
 function loadABI(path) {
   let content;
+  // Try to read from the provided path directly
   try {
     content = fs.readFileSync(path, "utf8");
   } catch {
-    content = fs.readFileSync(`../out/${path}`, "utf8");
+    // If that fails, try to prepend 'out/'
+    try {
+      content = fs.readFileSync(`out/${path}`, "utf8");
+    } catch {
+      // If that also fails, try to prepend '../out/'
+      try {
+        content = fs.readFileSync(`../out/${path}`, "utf8");
+      } catch {
+        throw new Error(`Could not find ABI file at paths: ${path}, out/${path}, ../out/${path}`);
+      }
+    }
   }
   const artifact = JSON.parse(content);
   return Array.isArray(artifact) ? artifact : artifact.abi;
@@ -26,9 +37,9 @@ function main() {
     targetAddress,
     "setTuple",
     [
-      "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
-      "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
-      "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      BigInt("0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"),
+      BigInt("0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"),
+      BigInt("0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
     ],
     BigInt(0),
   );
@@ -36,7 +47,7 @@ function main() {
   // Second call: getTupleConstant() - static call with partial return
   // This needs to use the appropriate offset which matches staticCallPartialReturn
   // For now, we'll add it as a regular static call
-  builder.addCall(
+  const callResult = builder.addCall(
     abi,
     targetAddress,
     "getTupleConstant",
@@ -44,15 +55,17 @@ function main() {
     BigInt(0),
   );
 
+  console.log("call Result:", callResult);
+
   // Third call: setTuple using first and third elements from the previous static call result
   builder.addCall(
     abi,
     targetAddress,
     "setTuple",
     [
-      { callIndex: 1, offset: 0, size: 32 },  // First element (1)
-      "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", // max uint
-      { callIndex: 1, offset: 64, size: 32 }  // Third element (3)
+      callResult[0],
+      BigInt("0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"), // max uint
+      callResult[2],
     ],
     BigInt(0),
   );
