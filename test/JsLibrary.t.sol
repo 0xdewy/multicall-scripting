@@ -99,10 +99,10 @@ contract JsLibrary is Test, CallBuilder, MulticallScripter {
                 targetAddr,
                 '",',
                 '"functionName":"setTuple","args":[',
-                '{"callIndex":1,"offset":0,"size":32},', // First item (offset 0)
+                '{"callIndex":1,"type":"uint256","value":0,"offset":0,"size":32,"requiresSizing":false},', // First item (offset 0)
                 '"0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"',
                 ",", // max uint
-                '{"callIndex":1,"offset":64,"size":32}', // Third item (offset 64)
+                '{"callIndex":1,"type":"uint256","value":0,"offset":64,"size":32,"requiresSizing":false}', // Third item (offset 64)
                 '],"value":0}',
                 "]"
             )
@@ -156,14 +156,14 @@ contract JsLibrary is Test, CallBuilder, MulticallScripter {
                 vm.toString(address(math)),
                 '",',
                 '"functionName":"add",',
-                '"args":["0x2",{"callIndex":0,"type":"uint256","value":0,"offset":0,"size":32}],',
+                '"args":["0x2",{"callIndex":0,"type":"uint256","value":0,"offset":0,"size":32,"requiresSizing":false}],',
                 '"value":0},',
                 '{"abiPath":"out/Math.sol/Math.json",',
                 '"target":"',
                 vm.toString(address(math)),
                 '",',
                 '"functionName":"setNum",',
-                '"args":[{"callIndex":1,"type":"uint256","value":0,"offset":0,"size":32}],',
+                '"args":[{"callIndex":1,"type":"uint256","value":0,"offset":0,"size":32,"requiresSizing":false}],',
                 '"value":0}',
                 "]"
             )
