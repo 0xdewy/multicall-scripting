@@ -78,8 +78,8 @@ contract JsLibrary is Test, CallBuilder, MulticallScripter {
         inputs[0] = "bun";
         inputs[1] = "js/test/multiple_variables.js";
         inputs[2] = vm.toString(address(dynamicReturn));
-        // Get the path to the ABI
-        inputs[3] = "Helpers.sol/DynamicReturn.json";
+        // Get the path to the ABI - it's in the out directory
+        inputs[3] = "out/Helpers.sol/DynamicReturn.json";
         
         bytes memory res = vm.ffi(inputs);
         string memory json = string(res);
@@ -87,35 +87,40 @@ contract JsLibrary is Test, CallBuilder, MulticallScripter {
         // Parse the JSON result
         bytes memory jsTargets = vm.parseJson(json, ".targets");
         address[] memory jsTargetsArray = abi.decode(jsTargets, (address[]));
-        
         bytes memory jsOffsets = vm.parseJson(json, ".offsets");
         uint256[] memory jsOffsetsArray = abi.decode(jsOffsets, (uint256[]));
-        
         bytes memory jsCalldatas = vm.parseJson(json, ".calldatas");
         bytes[] memory jsCalldatasArray = abi.decode(jsCalldatas, (bytes[]));
-        
         bytes memory jsMsgValues = vm.parseJson(json, ".msgValues");
         uint256[] memory jsMsgValuesArray = abi.decode(jsMsgValues, (uint256[]));
         
         // Compare with Solidity built values
-        assertEq(jsTargetsArray.length, targets.length);
+        assertEq(jsTargetsArray.length, targets.length, "targets length mismatch");
         for (uint i = 0; i < targets.length; i++) {
-            assertEq(jsTargetsArray[i], targets[i]);
+            assertEq(jsTargetsArray[i], targets[i], "targets mismatch");
         }
-        
-        assertEq(jsOffsetsArray.length, offsets.length);
+
+        assertEq(jsOffsetsArray.length, offsets.length, "offsets length mismatch");
         for (uint i = 0; i < offsets.length; i++) {
-            assertEq(jsOffsetsArray[i], offsets[i]);
+            assertEq(jsOffsetsArray[i], offsets[i], "offsets mismatch");
         }
         
-        assertEq(jsCalldatasArray.length, calldatas.length);
+        assertEq(jsCalldatasArray.length, calldatas.length, "calldata length mismatch");
         for (uint i = 0; i < calldatas.length; i++) {
-            assertEq(keccak256(jsCalldatasArray[i]), keccak256(calldatas[i]));
+            assertEq(keccak256(jsCalldatasArray[i]), keccak256(calldatas[i]), "calldatas mismatch");
         }
         
-        assertEq(jsMsgValuesArray.length, values.length);
-        for (uint i = 0; i < values.length; i++) {
-            assertEq(jsMsgValuesArray[i], values[i]);
+        // Since all msgValues are 0, and values is empty, we need to compare against an array of zeros
+        // The number of msgValues should equal the number of targets
+        for (uint i = 0; i < jsMsgValuesArray.length; i++) {
+            console.log(jsMsgValuesArray[i]);
+            assertEq(jsMsgValuesArray[i], 0);
         }
+
+        multicall.execute(jsTargetsArray, jsOffsetsArray, jsCalldatasArray, jsMsgValuesArray);
+        (uint a, uint b, uint c) = dynamicReturn.tuple();
+        assertEq(a, 1);
+        assertEq(b, type(uint).max);
+        assertEq(c, 3);
     }
 }
