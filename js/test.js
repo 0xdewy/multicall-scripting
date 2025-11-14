@@ -41,15 +41,15 @@ async function twoVariableReturn() {
 
   console.log('Tuple result outputs:', tupleResult);
 
-  // Second call: use the first and third elements of the tuple (a and c)
-  // We need to reference them using their offsets in the return data
+  // Use the outputs directly - they're already in the right format
+  // The first element is at index 0, third element at index 2
   const useTwoVariablesCall = builder.addCall(
     testAbi,
     testAddress,
     "useTwoVariables",
     [
-      { callIndex: 0, offset: 0, size: 32 },    // First element 'a' at offset 0
-      { callIndex: 0, offset: 64, size: 32 }    // Third element 'c' at offset 64
+      tupleResult[0],  // First element 'a'
+      tupleResult[2]   // Third element 'c'
     ],
     BigInt(0),
   );
@@ -82,22 +82,22 @@ async function erc20Test() {
     },
   ];
 
-
   const erc20Address = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48";
   const recipientAddress = "0x1234567890123456789012345678901234567890";
 
   const builder = new TransactionBuilder();
-  // Add balanceOf call, using the recipient address from the transfer call
+  // Add balanceOf call
   const balanceCallResult = builder.addCall(
     erc20Abi,
     erc20Address,
     "balanceOf",
-    [recipientAddress], // Use the recipient address directly
+    [recipientAddress],
     BigInt(0),
   );
 
-  console.log(balanceCallResult);
+  console.log('Balance call result:', balanceCallResult);
 
+  // Use the first (and only) output from balanceOf
   const transferCall = builder.addCall(
     erc20Abi,
     erc20Address,
@@ -106,12 +106,10 @@ async function erc20Test() {
     BigInt(0),
   );
 
-  //console.log('BalanceOf Call Output:', balanceCall);
-  //console.log('Transfer Call Output:', transferCall);
-  //console.log('Current Calls:', builder.calls);
+  console.log('Transfer call result:', transferCall);
 
   const result = builder.build();
-  console.log(result);
+  console.log('Built transaction:', result);
 }
 
 async function main() {
