@@ -152,15 +152,12 @@ export class TransactionBuilder {
       } else {
         value = 0;
       }
-    
       // Check if the type is dynamic
       const isDynamic = output.type === "string" || 
                         output.type === "bytes" || 
                         output.type.endsWith("[]");
-    
       let size;
       let offset;
-    
       if (isDynamic) {
         // For dynamic types, the static part contains the offset to the dynamic data
         offset = staticOffset;
@@ -174,7 +171,7 @@ export class TransactionBuilder {
         offset = staticOffset;
         size = 32;
       }
-    
+      // Push the outputs
       outputs.push({
         callIndex: this.calls.length - 1,
         type: output.type,
