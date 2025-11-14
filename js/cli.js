@@ -40,25 +40,17 @@ export function addCallsAndBuild(calls) {
           return arg; // Return output reference objects as-is
         }
 
-        // Handle all numeric strings by converting them to BigInt
-        if (typeof arg === "string" && /^-?\d+$/.test(arg)) {
-          try {
-            return BigInt(arg);
-          } catch (e) {
-            throw new Error(`Failed to parse "${arg}" to BigInt: ${e.message}`);
-          }
-        }
-        // Handle regular numbers
-        if (typeof arg === "number") {
-          return BigInt(arg);
-        }
-        // Handle hex strings
+        // Handle hex strings (including numbers passed as hex)
         if (typeof arg === "string" && arg.startsWith("0x") && /^0x[0-9a-fA-F]+$/.test(arg)) {
           try {
             return BigInt(arg);
           } catch (e) {
             return arg;
           }
+        }
+        // Handle regular numbers
+        if (typeof arg === "number") {
+          return BigInt(arg);
         }
         // Handle BigInt directly
         if (typeof arg === "bigint") {
@@ -114,8 +106,9 @@ function main() {
       console.error(`First arg type: ${typeof calls[0].args[0]}, value: ${calls[0].args[0]}`);
     }
     
+    let result;
     try {
-        const result = addCallsAndBuild(calls);
+        result = addCallsAndBuild(calls);
     } catch (error) {
         console.error(`Error in addCallsAndBuild: ${error.message}`);
         console.error(`Stack: ${error.stack}`);

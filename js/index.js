@@ -33,12 +33,11 @@ export class TransactionBuilder {
       if (typeof arg === "bigint") {
         return arg;
       }
-      // Handle all numeric strings by converting them to BigInt
-      if (typeof arg === "string" && /^-?\d+$/.test(arg)) {
+      // Handle hex strings (including numbers passed as hex)
+      if (typeof arg === "string" && arg.startsWith("0x") && /^0x[0-9a-fA-F]+$/.test(arg)) {
         try {
           return BigInt(arg);
         } catch (e) {
-          // If parsing fails, keep as string
           return arg;
         }
       }
