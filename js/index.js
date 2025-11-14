@@ -136,9 +136,10 @@ export class TransactionBuilder {
 
     // =============================== Build Outputs ===========================================
     // TODO: support all types
+    const nextOffset = functionAbi.outputs.reduce((o) => 32);
     const outputs = functionAbi.outputs.map((output, i) => {
       let value =
-        output.type === "address"
+        if (output.type === "address")
           ? "0x0000000000000000000000000000000000000000"
           : output.type === "bool"
             ? false
@@ -167,23 +168,19 @@ export class TransactionBuilder {
       let _call = this.calls[i];
       targets.push(_call.target);
       calldatas.push(_call.fnCalldata);
-
       // Use multiple output values
       if (_call.special) {
         throw Error("multiple output usage not yet implemented in js");
       }
-
       let memTarget = _call.memTargets.length > 0 ? _call.memTargets[0] : 0;
       let returnData =
         _call.returnDataLens.length > 0 ? _call.returnDataLens[0] : 0;
-
       // Encode msgvalue and calltype
       if (_call.calltype_flag == STATIC_CALL_FLAG) {
         offsets.push(staticCall(memTarget, returnData));
       } else if (_call.calltype_flag == CALL_FLAG) {
+        // NOTE: msg.value index is confusing:  0 == no msg.value, 1 == index 0
         if (_call.msgValue > 0) {
-          // Sending ETH $$
-          // NOTE: index starts at 1 instead of 0
           offsets.push(stateChangingCall(msgValues.length + 1));
           msgValues.push(_call.msgValue);
         } else {
@@ -194,6 +191,7 @@ export class TransactionBuilder {
     return { targets, offsets, calldatas, msgValues };
   }
 }
+
 
 // ===========================================Helpers===========================================
 
