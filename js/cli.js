@@ -116,6 +116,11 @@ function main() {
       return value;
     });
     
+    // Debug: log the types of the first argument in the first call
+    if (calls && calls.length > 0 && calls[0].args && calls[0].args.length > 0) {
+      console.error(`First arg type: ${typeof calls[0].args[0]}, value: ${calls[0].args[0]}`);
+    }
+    
     const result = addCallsAndBuild(calls);
 
     // Convert BigInt values to strings for JSON serialization
