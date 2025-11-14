@@ -62,25 +62,39 @@ class TransactionBuilder {
                         abiInput.type === "bytes" || 
                         abiInput.type.endsWith("[]");
       
+      // For call output references (objects with callIndex), we need to handle them specially
+      // They will be processed in the Argument Memory Offsets section
+      if (arg && typeof arg === "object" && "callIndex" in arg) {
+        // For now, we can push a placeholder value
+        // The actual value will be filled in during execution
+        processedArgs.push(0n);
+        continue;
+      }
+      
       // Validate dynamic types
       if (isDynamic) {
-        if (!arg || !arg.value) {
+        if (!arg) {
           throw new Error(`Must define the value of dynamic arguments. Type: ${abiInput.type} Name: ${abiInput.name}`);
         }
       }
       
       // Process the argument value
-      let processedValue;
-      if (arg && typeof arg === "object" && "callIndex" in arg) {
-        // For call output references, use the value directly
-        processedValue = arg.value;
-      } else {
-        processedValue = arg;
-      }
+      let processedValue = arg;
       
-      // Convert to BigInt for integer types
-      if (abiInput.type.includes("int")) {
-        processedValue = BigInt(processedValue);
+      // Convert to BigInt for integer types and addresses
+      if (abiInput.type.includes("int") || abiInput.type === "address") {
+        // Handle hex strings
+        if (typeof processedValue === "string" && processedValue.startsWith("0x")) {
+          processedValue = BigInt(processedValue);
+        } else if (typeof processedValue === "string" && /^\d+$/.test(processedValue)) {
+          processedValue = BigInt(processedValue);
+        } else if (typeof processedValue === "number") {
+          processedValue = BigInt(processedValue);
+        }
+        // Ensure it's a BigInt
+        if (typeof processedValue !== "bigint") {
+          processedValue = BigInt(processedValue);
+        }
       }
       
       processedArgs.push(processedValue);
@@ -88,10 +102,16 @@ class TransactionBuilder {
 
     // =============================== Argument Memory Offsets ===========================================
     // Update where the previous call is saving its output if one of the args is from a previous call
-    args.forEach((arg, index) => {
+    for (let index = 0; index < args.length; index++) {
+      const arg = args[index];
       // Check if this argument references a previous call's output
       if (arg && typeof arg === "object" && "callIndex" in arg) {
-        const prevCall = this.calls[arg.callIndex];
+        // Parse numeric fields
+        const callIndex = Number(arg.callIndex);
+        const offset = Number(arg.offset || 0);
+        const size = Number(arg.size || 32);
+        
+        const prevCall = this.calls[callIndex];
         // Multiple outputs not yet supported
         if (prevCall.memTargets.length > 0 || prevCall.special) {
           // TODO: doesn't need special multiple output if the return vals can be used in the same order (treat as 1 var)
@@ -109,10 +129,10 @@ class TransactionBuilder {
 
         // Update previous call to return data at the calculated offset
         prevCall.memTargets.push(returnOffset);
-        prevCall.returnDataLens.push(arg.size);
-        prevCall.returnDataOffsets.push(arg.offset);
+        prevCall.returnDataLens.push(size);
+        prevCall.returnDataOffsets.push(offset);
       }
-    });
+    }
 
     // =============================== Encode Skeleton Calldata===========================================
     // Encode function call data
@@ -141,12 +161,10 @@ class TransactionBuilder {
 
 
     // =============================== Build Outputs ===========================================
-      // TODO: need to use special call to handle dynamic data safely
     // Calculate offsets for each output, considering dynamic types
     let staticOffset = 0;
- // Start dynamic data after all static slots and add 32 to account for the length slot
-    let dynamicOffsetStart = functionAbi.outputs.length * 32 + 32;
-    let dynamicOffset = dynamicOffsetStart; // Start dynamic data after all static slots
+    // Start dynamic data after all static slots
+    let dynamicOffset = functionAbi.outputs.length * 32;
     const outputs = [];
   
     for (let i = 0; i < functionAbi.outputs.length; i++) {
@@ -161,7 +179,7 @@ class TransactionBuilder {
       } else {
         value = 0;
       }
-      // Dynamic types store an offset to the actual start of their data
+      // Check if the type is dynamic
       const isDynamic = output.type === "string" || 
                         output.type === "bytes" || 
                         output.type.endsWith("[]");
@@ -179,8 +197,8 @@ class TransactionBuilder {
         size = 32;
         staticOffset += 32;
       }
-      // Does this have a dynamic variable earlier in the output that effects its offset?
-      let requiresSizing = dynamicOffset > 32 + dynamicOffsetStart ? true : false;
+      // Check if sizing is required
+      let requiresSizing = isDynamic;
       // Push the outputs
       outputs.push({
         callIndex: this.calls.length - 1, // store this for easy reference later
@@ -190,7 +208,6 @@ class TransactionBuilder {
         size: size,
         requiresSizing,
       });
-    
     }
 
     return outputs;
