@@ -37,6 +37,7 @@ contract JsLibrary is Test, CallBuilder, MulticallScripter {
 
     // set tuple(max, max, max) -> get_tuple_constants -> (1, 2, 3) -> setTuple(1, max, 3)
     function test_js_partial_return_data() public {
+        // Build the transaction using Solidity
         // set_tuple(max, max, max)
         bytes memory set_tuple_first_calldata = abi.encodeWithSelector(
             DynamicReturn.setTuple.selector, type(uint256).max, type(uint256).max, type(uint256).max
@@ -46,6 +47,7 @@ contract JsLibrary is Test, CallBuilder, MulticallScripter {
         // set_tuple(1, max, 3)
         bytes memory set_tuple_second_calldata =
             abi.encodeWithSelector(DynamicReturn.setTuple.selector, uint256(0), type(uint256).max, uint256(0));
+        
         // ===============set_tuple=======================
         calldatas.push(set_tuple_first_calldata);
         targets.push(address(dynamicReturn));
@@ -71,6 +73,49 @@ contract JsLibrary is Test, CallBuilder, MulticallScripter {
         targets.push(address(dynamicReturn));
         offsets.push(stateChangingCall(0x0));
 
-        // TODO: call js/test/multiple_variables.js
+        // Call the JavaScript file using FFI
+        string[] memory inputs = new string[](4);
+        inputs[0] = "node";
+        inputs[1] = "js/test/multiple_variables.js";
+        inputs[2] = vm.toString(address(dynamicReturn));
+        // Get the path to the ABI
+        inputs[3] = "out/DynamicReturn.sol/DynamicReturn.json";
+        
+        bytes memory res = vm.ffi(inputs);
+        string memory json = string(res);
+        
+        // Parse the JSON result
+        bytes memory jsTargets = vm.parseJson(json, ".targets");
+        address[] memory jsTargetsArray = abi.decode(jsTargets, (address[]));
+        
+        bytes memory jsOffsets = vm.parseJson(json, ".offsets");
+        uint256[] memory jsOffsetsArray = abi.decode(jsOffsets, (uint256[]));
+        
+        bytes memory jsCalldatas = vm.parseJson(json, ".calldatas");
+        bytes[] memory jsCalldatasArray = abi.decode(jsCalldatas, (bytes[]));
+        
+        bytes memory jsMsgValues = vm.parseJson(json, ".msgValues");
+        uint256[] memory jsMsgValuesArray = abi.decode(jsMsgValues, (uint256[]));
+        
+        // Compare with Solidity built values
+        assertEq(jsTargetsArray.length, targets.length);
+        for (uint i = 0; i < targets.length; i++) {
+            assertEq(jsTargetsArray[i], targets[i]);
+        }
+        
+        assertEq(jsOffsetsArray.length, offsets.length);
+        for (uint i = 0; i < offsets.length; i++) {
+            assertEq(jsOffsetsArray[i], offsets[i]);
+        }
+        
+        assertEq(jsCalldatasArray.length, calldatas.length);
+        for (uint i = 0; i < calldatas.length; i++) {
+            assertEq(keccak256(jsCalldatasArray[i]), keccak256(calldatas[i]));
+        }
+        
+        assertEq(jsMsgValuesArray.length, values.length);
+        for (uint i = 0; i < values.length; i++) {
+            assertEq(jsMsgValuesArray[i], values[i]);
+        }
     }
 }

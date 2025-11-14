@@ -19,8 +19,23 @@ function main() {
   const abi = loadABI(abiPath);
   const builder = new TransactionBuilder();
   
-  // First call: getTupleConstant() returns (1, 2, 3)
-  const tupleResult = builder.addCall(
+  // First call: setTuple(max, max, max) - state changing
+  builder.addCall(
+    abi,
+    targetAddress,
+    "setTuple",
+    [
+      "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+    ],
+    BigInt(0),
+  );
+
+  // Second call: getTupleConstant() - static call with partial return
+  // This needs to use the appropriate offset which matches staticCallPartialReturn
+  // For now, we'll add it as a regular static call
+  builder.addCall(
     abi,
     targetAddress,
     "getTupleConstant",
@@ -28,15 +43,15 @@ function main() {
     BigInt(0),
   );
 
-  // Second call: setTuple using first and third elements from the tuple
-  const setTupleCall = builder.addCall(
+  // Third call: setTuple using first and third elements from the previous static call result
+  builder.addCall(
     abi,
     targetAddress,
     "setTuple",
     [
-      { callIndex: 0, offset: 0, size: 32 },  // First element (1)
+      { callIndex: 1, offset: 0, size: 32 },  // First element (1)
       "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", // max uint
-      { callIndex: 0, offset: 64, size: 32 }  // Third element (3)
+      { callIndex: 1, offset: 64, size: 32 }  // Third element (3)
     ],
     BigInt(0),
   );
@@ -51,7 +66,7 @@ function main() {
     msgValues: result.msgValues.map((value) => value.toString()),
   };
   console.log(JSON.stringify(serializableResult));
-  return serializeableResult;
+  return serializableResult;
 }
 
 main();
