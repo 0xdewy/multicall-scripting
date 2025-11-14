@@ -23,50 +23,14 @@ export class TransactionBuilder {
   // Add a call to the script
   // TODO: support overriding the calltype (static/call)
   addCall(abi, target, functionName, args, msgValue = BigInt(0)) {
-    // Resolve arguments for ABI lookup, handling CallOutput objects
-    // First, process args to ensure numbers are properly handled
-    const processedArgs = args.map((arg) => {
-      if (arg && typeof arg === "object" && "callIndex" in arg) {
-        return arg;
-      }
-      // If it's already a BigInt, keep it
-      if (typeof arg === "bigint") {
-        return arg;
-      }
-      // Handle hex strings (including numbers passed as hex)
-      if (typeof arg === "string" && arg.startsWith("0x")) {
-        try {
-          // Parse hex string to BigInt
-          const result = BigInt(arg);
-          return result;
-        } catch (e) {
-          console.error(`Failed to parse "${arg}" to BigInt: ${e.message}`);
-          throw new Error(`Failed to parse String to BigInt`);
-        }
-      }
-      // Handle regular numbers
-      if (typeof arg === "number") {
-        return BigInt(arg);
-      }
-      // Handle numeric strings (without 0x prefix)
-      if (typeof arg === "string" && /^-?\d+$/.test(arg)) {
-        try {
-          return BigInt(arg);
-        } catch (e) {
-          return arg;
-        }
-      }
-      return arg;
-    });
+    
 
     // =============================== Load ABI ===========================================
     const functionAbi = getAbiItem({
       abi,
       name: functionName,
-      args: processedArgs.map((arg) =>
-        arg && typeof arg === "object" && "callIndex" in arg ? arg.value : arg,
-      ),
     });
+    
     // Fail if ABI/function is not found
     if (!functionAbi || functionAbi.type !== "function") {
       throw new Error(`Function ${functionName} not found in ABI`);
@@ -82,9 +46,56 @@ export class TransactionBuilder {
         : CALL_FLAG;
 
 
+    // =============================== Args Validation ===========================================
+    if (args.length != functionAbi.inputs.length) {
+      throw new Error(`Number of arguments do not match abi arguments ${args.length} vs ${functionAbi.inputs.length}`);
+    }
+
+    functionAbi.inputs.zip(args).forEach((abiInput, arg) => {
+      if (arg.requiresResizing) {
+        throw new Error(`Does not support multiple dynamic outputs yet`);
+      }
+
+      if (["string", "bytes"].contains(abiInput.type) || abiInput.type.contains("[]")) {
+          if (!arg.value) {
+            throw new Error(`Must define the value of dynamic arguments. Type: ${abiInput.type} Name: ${abiInput.name}`);
+          }
+          // TODO: properly parse bytes/string
+          arg.size = arg.value.length / 2;
+      }
+    });
+
+    // Resolve arguments for ABI lookup, handling CallOutput objects
+    // First, process args to ensure numbers are properly handled
+    const processedArgs = args.map((arg) => {
+      if (arg && typeof arg === "object" && "callIndex" in arg) {
+        return arg.value;
+      }
+      // If it's already a BigInt, keep it
+      if (typeof arg === "bigint") {
+        return arg;
+      }
+      // Handle hex strings (including numbers passed as hex)
+      if (typeof arg === "string" && arg.startsWith("0x") && /^0x[0-9a-fA-F]+$/.test(arg)) {
+        try {
+          return BigInt(arg);
+        } catch (e) {
+          return arg;
+        }
+      }
+      // Handle regular numbers
+      if (typeof arg === "number") {
+        return BigInt(arg);
+      }
+      return arg;
+    });
+
+    const processedArgs = []
+    
+
     // =============================== Argument Memory Offsets ===========================================
     // Update where the previous call is saving its output if one of the args is from a previous call
-    const resolvedArgs = args.map((arg, index) => {
+    args.forEach((arg, index) => {
       // Check if this argument references a previous call's output
       if (
         arg &&
@@ -112,19 +123,16 @@ export class TransactionBuilder {
         prevCall.memTargets.push(returnOffset);
         prevCall.returnDataLens.push(arg.size);
         prevCall.returnDataOffsets.push(arg.offset);
-
-        return arg.value;
       }
 
-      return arg;
-    });
+      });
 
     // =============================== Encode Skeleton Calldata===========================================
     // Encode function call data
     const fnCalldata = encodeFunctionData({
       abi,
       functionName,
-      args: resolvedArgs,
+      args: processedArgs,
     });
 
 
@@ -148,7 +156,8 @@ export class TransactionBuilder {
     // =============================== Build Outputs ===========================================
     // Calculate offsets for each output, considering dynamic types
     let staticOffset = 0;
-    let dynamicOffset = functionAbi.outputs.length * 32; // Start dynamic data after all static slots
+    let dynamicOffsetStart = functionAbi.outputs.length * 32; // Start dynamic data after all static slots
+    let dynamicOffset = dynamicOffsetStart; // Start dynamic data after all static slots
     const outputs = [];
   
     for (let i = 0; i < functionAbi.outputs.length; i++) {
@@ -171,27 +180,29 @@ export class TransactionBuilder {
       let offset;
       if (isDynamic) {
         // For dynamic types, the static part contains the offset to the dynamic data
-        offset = staticOffset;
+        offset = dynamicOffset;
         size = 32; // The offset value itself is 32 bytes
-        // The actual data would be at dynamicOffset, but we can't know its size yet
-        // For now, we'll assume 32 bytes for simplicity
-        // In practice, this would need to be adjusted based on actual return data
+        // The actual data will be calculated when the user defines the size
         dynamicOffset += 32; // Move dynamic offset for next dynamic item
       } else {
         // Static types are stored directly in their slot
         offset = staticOffset;
         size = 32;
+        staticOffset += 32;
       }
+      // Does this have a dynamic variable earlier in the output that effects its offset?
+      // TODO: need to use special call to handle dynamic data safely
+      let requiresSizing = dynamicOffset > 32 + dynamicOffsetStart ? true : false;
       // Push the outputs
       outputs.push({
-        callIndex: this.calls.length - 1,
+        callIndex: this.calls.length - 1, // store this for easy reference later
         type: output.type,
         value,
         offset: offset,
         size: size,
+        requiresSizing,
       });
     
-      staticOffset += 32;
     }
 
     return outputs;
