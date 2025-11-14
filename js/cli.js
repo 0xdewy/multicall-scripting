@@ -26,18 +26,15 @@ module.exports.addCallsAndBuild = function addCallsAndBuild(calls) {
       const processedArgs = call.args.map((arg, index) => {
         // Check if this is a partial return reference object
         if (arg && typeof arg === "object" && "callIndex" in arg && "offset" in arg && "size" in arg) {
-          // Ensure all required fields are present
+          // Ensure all required fields are present and are numbers
           if (typeof arg.callIndex !== 'number' || typeof arg.offset !== 'number' || typeof arg.size !== 'number') {
             throw new Error(`Invalid partial return reference object at index ${index}`);
           }
+          // Return only the essential fields
           return {
             callIndex: arg.callIndex,
             offset: arg.offset,
-            size: arg.size,
-            // Include other fields if present
-            ...(arg.type && { type: arg.type }),
-            ...(arg.value !== undefined && { value: arg.value }),
-            ...(arg.requiresSizing !== undefined && { requiresSizing: arg.requiresSizing })
+            size: arg.size
           };
         }
         const inputType = functionAbi.inputs[index].type;
