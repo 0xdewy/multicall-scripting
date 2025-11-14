@@ -24,10 +24,27 @@ export class TransactionBuilder {
   // TODO: support overriding the calltype (static/call)
   addCall(abi, target, functionName, args, msgValue = BigInt(0)) {
     // Resolve arguments for ABI lookup, handling CallOutput objects
+    // First, process args to ensure numbers are properly handled
+    const processedArgs = args.map((arg) => {
+      if (arg && typeof arg === "object" && "callIndex" in arg) {
+        return arg;
+      }
+      // Handle large numbers by always treating them as BigInt if they're numbers or numeric strings
+      if (typeof arg === "number" || (typeof arg === "string" && /^-?\d+$/.test(arg))) {
+        try {
+          return BigInt(arg);
+        } catch (e) {
+          // If it can't be converted to BigInt, return as is
+          return arg;
+        }
+      }
+      return arg;
+    });
+
     const functionAbi = getAbiItem({
       abi,
       name: functionName,
-      args: args.map((arg) =>
+      args: processedArgs.map((arg) =>
         arg && typeof arg === "object" && "callIndex" in arg ? arg.value : arg,
       ),
     });

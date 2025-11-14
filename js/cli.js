@@ -40,21 +40,29 @@ export function addCallsAndBuild(calls) {
         return arg; // Return output reference objects as-is
       }
 
-      // If it's a string and the parameter type is numeric, convert to BigInt
-      if (typeof arg === "string" && paramType && isNumericType(paramType)) {
-        // Check if it's a valid numeric string
-        if (/^-?\d+$/.test(arg)) {
-          const result = BigInt(arg);
-          return result;
-        }
-        // Check if it's a valid hex string for numeric types
-        if (arg.startsWith("0x") && /^0x[0-9a-fA-F]+$/.test(arg)) {
-          const result = BigInt(arg);
-          return result;
+      // Handle numbers - always try to convert to BigInt if it's a numeric string
+      if (typeof arg === "string" && /^-?\d+$/.test(arg)) {
+        try {
+          return BigInt(arg);
+        } catch (e) {
+          // If conversion fails, keep as string
+          return arg;
         }
       }
+      // Handle hex strings
+      if (typeof arg === "string" && arg.startsWith("0x") && /^0x[0-9a-fA-F]+$/.test(arg)) {
+        try {
+          return BigInt(arg);
+        } catch (e) {
+          return arg;
+        }
+      }
+      // Handle numbers directly
+      if (typeof arg === "number") {
+        return BigInt(arg);
+      }
 
-      // For addresses and strings, keep as strings
+      // For addresses and other strings, keep as strings
       return arg;
     });
 
@@ -87,7 +95,7 @@ function main() {
 
   try {
     const callsJSON = args[0];
-    const calls = JSON.parse(callsJSON); // Just use regular JSON.parse
+    const calls = JSON.parse(callsJSON);
     const result = addCallsAndBuild(calls);
 
     const serializableResult = {
@@ -96,6 +104,9 @@ function main() {
       calldatas: result.calldatas,
       msgValues: result.msgValues.map((value) => value.toString()),
     };
+    
+    // Output the result as JSON to stdout
+    console.log(JSON.stringify(serializableResult));
   } catch (error) {
     process.stderr.write(`Error: ${error.message}\n`);
     process.exit(1);
