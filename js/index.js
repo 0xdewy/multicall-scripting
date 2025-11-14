@@ -50,6 +50,7 @@ export class TransactionBuilder {
       return arg;
     });
 
+    // =============================== Load ABI ===========================================
     const functionAbi = getAbiItem({
       abi,
       name: functionName,
@@ -57,12 +58,12 @@ export class TransactionBuilder {
         arg && typeof arg === "object" && "callIndex" in arg ? arg.value : arg,
       ),
     });
-
     // Fail if ABI/function is not found
     if (!functionAbi || functionAbi.type !== "function") {
       throw new Error(`Function ${functionName} not found in ABI`);
     }
 
+    // =============================== CallType ===========================================
     // Determine call type based on function state mutability
     // TODO: allow user to modify calltype
     const callType =
@@ -71,6 +72,8 @@ export class TransactionBuilder {
         ? STATIC_CALL_FLAG
         : CALL_FLAG;
 
+
+    // =============================== Argument Memory Offsets ===========================================
     // Update where the previous call is saving its output if one of the args is from a previous call
     const resolvedArgs = args.map((arg, index) => {
       // Check if this argument references a previous call's output
