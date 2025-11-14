@@ -102,16 +102,12 @@ function main() {
 
   try {
     const callsJSON = args[0];
-    // Parse JSON while preserving large numbers as strings
+    // Parse JSON while treating all numbers as strings to preserve precision
+    // This ensures very large numbers don't lose precision
     const calls = JSON.parse(callsJSON, (key, value) => {
-      // Keep numbers as numbers for small values, convert large numbers to strings
+      // Convert all numbers to strings to avoid precision loss
       if (typeof value === 'number') {
-        // If it's a very large number (detected by scientific notation in string representation)
-        if (Math.abs(value) >= 1e15 || !Number.isSafeInteger(value)) {
-          // Convert to string to preserve precision
-          return value.toString();
-        }
-        return value;
+        return value.toString();
       }
       return value;
     });
