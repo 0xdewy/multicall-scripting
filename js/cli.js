@@ -39,18 +39,16 @@ export function addCallsAndBuild(calls) {
         return arg; // Return output reference objects as-is
       }
 
-      // Handle all numbers as BigInt to prevent overflow
+      // Handle all numbers as BigInt
       // Check if it's a numeric string
       if (typeof arg === "string" && /^-?\d+$/.test(arg)) {
         try {
-          // Ensure the number is within uint256 range
           const bigIntValue = BigInt(arg);
-          if (bigIntValue > BigInt("115792089237316195423570985008687907853269984665640564039457584007913129639935")) {
-            throw new Error(`Number ${arg} is too large for uint256`);
-          }
+          console.error(`Processing numeric string: ${arg} -> ${bigIntValue}`);
           return bigIntValue;
         } catch (e) {
           // If conversion fails, keep as string
+          console.error(`Failed to convert ${arg} to BigInt: ${e.message}`);
           return arg;
         }
       }
@@ -58,27 +56,27 @@ export function addCallsAndBuild(calls) {
       if (typeof arg === "string" && arg.startsWith("0x") && /^0x[0-9a-fA-F]+$/.test(arg)) {
         try {
           const bigIntValue = BigInt(arg);
-          if (bigIntValue > BigInt("115792089237316195423570985008687907853269984665640564039457584007913129639935")) {
-            throw new Error(`Number ${arg} is too large for uint256`);
-          }
+          console.error(`Processing hex string: ${arg} -> ${bigIntValue}`);
           return bigIntValue;
         } catch (e) {
+          console.error(`Failed to convert ${arg} to BigInt: ${e.message}`);
           return arg;
         }
       }
       // Handle regular numbers
       if (typeof arg === "number") {
-        return BigInt(Math.floor(arg));
+        const bigIntValue = BigInt(Math.floor(arg));
+        console.error(`Processing number: ${arg} -> ${bigIntValue}`);
+        return bigIntValue;
       }
       // Handle BigInt directly
       if (typeof arg === "bigint") {
-        if (arg > BigInt("115792089237316195423570985008687907853269984665640564039457584007913129639935")) {
-          throw new Error(`Number ${arg} is too large for uint256`);
-        }
+        console.error(`Processing BigInt: ${arg}`);
         return arg;
       }
 
       // For addresses and other strings, keep as strings
+      console.error(`Processing as string: ${arg}`);
       return arg;
     });
 
@@ -110,24 +108,24 @@ function main() {
 
   try {
     const callsJSON = args[0];
+    console.error(`Raw JSON input: ${callsJSON}`);
     // Use a custom reviver to parse numbers as BigInt when they're very large
     const calls = JSON.parse(callsJSON, (key, value) => {
       // If the value is a number in string form, parse it as BigInt
       if (typeof value === 'string' && /^-?\d+$/.test(value)) {
         try {
           const bigIntValue = BigInt(value);
-          // Check if it's within uint256 range
-          if (bigIntValue > BigInt("115792089237316195423570985008687907853269984665640564039457584007913129639935")) {
-            throw new Error(`Number ${value} is too large for uint256`);
-          }
+          console.error(`JSON reviver: ${key}: ${value} -> ${bigIntValue}`);
           return bigIntValue;
         } catch (e) {
           // If conversion fails, keep as string
+          console.error(`JSON reviver failed for ${value}: ${e.message}`);
           return value;
         }
       }
       return value;
     });
+    console.error(`Parsed calls: ${JSON.stringify(calls, null, 2)}`);
     const result = addCallsAndBuild(calls);
 
     const serializableResult = {

@@ -31,26 +31,22 @@ export class TransactionBuilder {
       }
       // If it's already a BigInt, keep it
       if (typeof arg === "bigint") {
-        // Validate it's within uint256 range
-        if (arg > BigInt("115792089237316195423570985008687907853269984665640564039457584007913129639935")) {
-          throw new Error(`Number ${arg} is too large for uint256`);
-        }
+        console.error(`TransactionBuilder: Processing BigInt: ${arg}`);
         return arg;
       }
       // Handle numbers and numeric strings
       if (typeof arg === "number" || (typeof arg === "string" && /^-?\d+$/.test(arg))) {
         try {
           const bigIntValue = BigInt(arg);
-          // Validate it's within uint256 range
-          if (bigIntValue > BigInt("115792089237316195423570985008687907853269984665640564039457584007913129639935")) {
-            throw new Error(`Number ${arg} is too large for uint256`);
-          }
+          console.error(`TransactionBuilder: Processing number: ${arg} -> ${bigIntValue}`);
           return bigIntValue;
         } catch (e) {
           // If it can't be converted to BigInt, return as is
+          console.error(`TransactionBuilder: Failed to convert ${arg}: ${e.message}`);
           return arg;
         }
       }
+      console.error(`TransactionBuilder: Processing as other: ${arg}`);
       return arg;
     });
 
