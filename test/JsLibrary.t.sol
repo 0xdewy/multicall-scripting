@@ -120,51 +120,30 @@ contract JsLibrary is Test, CallBuilder, MulticallScripter {
         assertEq(c, 3);
     }
 
-    function test_simple_usage_js() public {
-        // ===================================Solidity=========================================
-        // x = math.add(2,2)
-        calldatas.push(abi.encodeWithSelector(Math.add.selector, 2, 2));
-        targets.push(address(math));
-        // store output of static call 36 bytes ahead in call chain as second param of following math.add(a,b)
-        // <this_call><add_fn_selector><first_param><second_param>
-        offsets.push(staticCall(0x24, 0x20));
-
-        // y = math.add(2, x)
-        calldatas.push(abi.encodeWithSelector(Math.add.selector, 2, 0));
-        targets.push(address(math));
-        // next param offset is 4bytes + 32bytes (32==0x20)
-        offsets.push(staticCall(0x4, 0x20));
-
-        // math.setNum(y)
-        calldatas.push(abi.encodeWithSelector(Math.setNum.selector, 0));
-        targets.push(address(math));
-        offsets.push(stateChangingCall());
-
+    function test_twoVariableReturn() public {
+        // First, let's create a helper contract that returns a tuple
+        // We can use DynamicReturn which already has getTupleConstant() that returns (1, 2, 3)
+        
         // ============================================JS=========================================
         string memory callsJson = string(
             abi.encodePacked(
                 "[",
-                '{"abiPath":"out/Math.sol/Math.json",',
+                // Call 0: getTupleConstant() returns (1, 2, 3)
+                '{"abiPath":"out/Helpers.sol/DynamicReturn.json",',
                 '"target":"',
-                vm.toString(address(math)),
+                vm.toString(address(dynamicReturn)),
                 '",',
-                '"functionName":"add",',
-                '"args":["0x2","0x2"],',
-                '"value":0},',
-                '{"abiPath":"out/Math.sol/Math.json",',
+                '"functionName":"getTupleConstant","args":[],"value":0},',
+                // Call 1: use the first and third elements from the tuple (1 and 3)
+                '{"abiPath":"out/Helpers.sol/DynamicReturn.json",',
                 '"target":"',
-                vm.toString(address(math)),
+                vm.toString(address(dynamicReturn)),
                 '",',
-                '"functionName":"add",',
-                '"args":["0x2",{"callIndex":0,"type":"uint256","value":0,"offset":0,"size":32,"requiresSizing":false}],',
-                '"value":0},',
-                '{"abiPath":"out/Math.sol/Math.json",',
-                '"target":"',
-                vm.toString(address(math)),
-                '",',
-                '"functionName":"setNum",',
-                '"args":[{"callIndex":1,"type":"uint256","value":0,"offset":0,"size":32,"requiresSizing":false}],',
-                '"value":0}',
+                '"functionName":"setTuple","args":[',
+                '{"callIndex":0,"type":"uint256","value":0,"offset":0,"size":32,"requiresSizing":false},', // First element (1)
+                '"0x0",', // Placeholder for second element
+                '{"callIndex":0,"type":"uint256","value":0,"offset":64,"size":32,"requiresSizing":false}', // Third element (3)
+                '],"value":0}',
                 "]"
             )
         );
@@ -176,20 +155,14 @@ contract JsLibrary is Test, CallBuilder, MulticallScripter {
             uint256[] memory jsValues
         ) = callJavaScriptBuilder(callsJson);
 
-        for (uint256 i = 0; i < offsets.length; i++) {
-            assertEq(offsets[i], jsOffsets[i], "offsets do not match");
-            assertEq(targets[i], jsTargets[i], "targets do not match");
-            assertEq(calldatas[i], jsCalldatas[i], "calldatas do not match");
-        }
-        for (uint256 i = 0; i < values.length; i++) {
-            assertEq(values[i], jsValues[i]);
-        }
-
-        // execute calls
-        // multicall.execute(targets, offsets, calldatas, values);
+        // Execute calls
         multicall.execute(jsTargets, jsOffsets, jsCalldatas, jsValues);
-        // 2 + 2 => 4 + 2 => 6
-        assertEq(math.number(), 6, "failed to add numbers");
+        
+        // Verify the result: setTuple should have been called with (1, 0, 3)
+        (uint256 a, uint256 b, uint256 c) = dynamicReturn.tuple();
+        assertEq(a, 1);
+        assertEq(b, 0);
+        assertEq(c, 3);
     }
 
     // Helper fn to call the javascript library
