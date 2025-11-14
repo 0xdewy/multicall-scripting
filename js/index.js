@@ -258,112 +258,17 @@ export class TransactionBuilder {
 }
 
 
-// ===========================================Helpers===========================================
-
-// staticCall: Emulates a static call with memory target and result length
-// <calltype><valueIndex><memTarget><resultLength>
-export function staticCall(memTarget, resultLength) {
-  memTarget = BigInt(memTarget);
-  resultLength = BigInt(resultLength);
-  const calltypePart = STATIC_CALL_FLAG << VALUE_OFFSET;
-  const memTargetPart = memTarget << BigInt(120);
-  const resultLengthPart = resultLength;
-  const offsets = calltypePart | memTargetPart | resultLengthPart;
-  return offsets;
+// Helper functions
+function staticCall(memTarget, resultLength) {
+  const m = BigInt(memTarget);
+  const r = BigInt(resultLength);
+  if (m > UINT120_MAX) throw new Error("memTarget value too large");
+  if (r > UINT120_MAX) throw new Error("resultLength value too large");
+  return (STATIC_CALL_FLAG << VALUE_OFFSET) | (m << 120n) | r;
 }
 
-// stateChangingCall
-export function stateChangingCall(msgValueIndex = 0) {
-  return _stateChangingCall(msgValueIndex, 0, 0);
-}
-
-function _stateChangingCall(msgValueIndex, memTarget, resultLength) {
-  msgValueIndex = BigInt(msgValueIndex);
-  memTarget = BigInt(memTarget);
-  resultLength = BigInt(resultLength);
-
-  // Input validation
-  if (msgValueIndex > UINT8_MAX) {
-    throw new Error("msgValueIndex too large");
-  }
-  if (memTarget > UINT120_MAX) {
-    throw new Error("memTarget value too large");
-  }
-  if (resultLength > UINT120_MAX) {
-    throw new Error("resultLength value too large");
-  }
-
-  // <calltype><valueIndex><memTarget><resultLength>
-  // calltype (8 bits) | valueIndex (8 bits) | memTarget (120 bits) | resultLength (120 bits)
-  const offsets =
-    (CALL_FLAG << VALUE_OFFSET) |
-    (msgValueIndex << BigInt(240)) |
-    (memTarget << BigInt(120)) |
-    resultLength;
-
-  return offsets;
-}
-
-// staticCallPartialReturn: To make a static call and use multiple return vars
-export function staticCallPartialReturn(
-  memTargets,
-  resultLengths,
-  returnOffsets,
-  returnLength,
-) {
-  returnLength = BigInt(returnLength);
-
-  // Input validation
-  if (
-    memTargets.length > PARTIAL_RETURN_VARS ||
-    resultLengths.length > PARTIAL_RETURN_VARS ||
-    returnOffsets.length > PARTIAL_RETURN_VARS
-  ) {
-    throw new Error("invalid number of params");
-  }
-  if (returnLength > UINT16_MAX) {
-    throw new Error("returnLength is too large");
-  }
-
-  const len = memTargets.length;
-  let encodedMemTargets = BigInt(0);
-  let encodedResultLengths = BigInt(0);
-  let encodedOffsets = BigInt(0);
-
-  // Encode arrays into packed data
-  for (let i = 0; i < len; i++) {
-    const memTarget = BigInt(memTargets[i]);
-    const resultLength = BigInt(resultLengths[i]);
-    const returnOffset = BigInt(returnOffsets[i]);
-
-    // Validate individual elements
-    if (memTarget > PARTIAL_RETURN_MEM_TARGET_FLAG_INDIVIDUAL) {
-      throw new Error("memTarget value too large");
-    }
-    if (resultLength > UINT16_MAX) {
-      throw new Error("resultLength value too large");
-    }
-    if (returnOffset > UINT16_MAX) {
-      throw new Error("returnOffset value too large");
-    }
-
-    const varOffset = Number(PARTIAL_RETURN_VARS - (i + 1));
-    encodedMemTargets |= memTarget << BigInt(varOffset * 40);
-    encodedResultLengths |= resultLength << BigInt(varOffset * 16);
-    encodedOffsets |= returnOffset << BigInt(varOffset * 16);
-  }
-
-  // Pack data into offsets
-  // <calltype><valueIndex><memTargets><resultLengths><returnOffsets><resultLength><num_vars>
-  // calltype (8 bits) | valueIndex (8 bits, 0) | memTargets (120 bits) | resultLengths (48 bits) | returnOffsets (48 bits) | resultLength (16 bits) | num_vars (8 bits)
-  const offsets =
-    (STATIC_CALL_PARTIAL_RETURN_FLAG << BigInt(248)) |
-    (BigInt(0) << BigInt(240)) | // valueIndex = 0
-    (encodedMemTargets << BigInt(120)) |
-    (encodedResultLengths << BigInt(72)) |
-    (encodedOffsets << BigInt(24)) |
-    (returnLength << BigInt(8)) |
-    BigInt(len);
-
-  return offsets;
+function stateChangingCall(msgValueIndex = 0) {
+  const mvi = BigInt(msgValueIndex);
+  if (mvi > UINT8_MAX) throw new Error("msgValueIndex too large");
+  return (CALL_FLAG << VALUE_OFFSET) | (mvi << 240n);
 }
