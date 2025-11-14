@@ -83,11 +83,11 @@ contract JsLibrary is Test, CallBuilder, MulticallScripter {
                 targetAddr,
                 '",',
                 '"functionName":"setTuple","args":[',
-                vm.toString(maxUint),
+                '"', vm.toString(maxUint), '"',
                 ",",
-                vm.toString(maxUint),
+                '"', vm.toString(maxUint), '"',
                 ",",
-                vm.toString(maxUint),
+                '"', vm.toString(maxUint), '"',
                 '],"value":0},',
                 // Call 1: getTupleConstant() - will return (1, 2, 3)
                 '{"abiPath":"out/Helpers.sol/DynamicReturn.json","target":"',
@@ -100,7 +100,7 @@ contract JsLibrary is Test, CallBuilder, MulticallScripter {
                 '",',
                 '"functionName":"setTuple","args":[',
                 '{"callIndex":1,"offset":0,"size":32},', // First item (offset 0)
-                vm.toString(maxUint),
+                '"', vm.toString(maxUint), '"',
                 ",", // max uint
                 '{"callIndex":1,"offset":64,"size":32}', // Third item (offset 64)
                 '],"value":0}',

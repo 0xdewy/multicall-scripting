@@ -31,22 +31,16 @@ export class TransactionBuilder {
       }
       // If it's already a BigInt, keep it
       if (typeof arg === "bigint") {
-        console.error(`TransactionBuilder: Processing BigInt: ${arg}`);
         return arg;
       }
       // Handle numbers and numeric strings
       if (typeof arg === "number" || (typeof arg === "string" && /^-?\d+$/.test(arg))) {
         try {
-          const bigIntValue = BigInt(arg);
-          console.error(`TransactionBuilder: Processing number: ${arg} -> ${bigIntValue}`);
-          return bigIntValue;
+          return BigInt(arg);
         } catch (e) {
-          // If it can't be converted to BigInt, return as is
-          console.error(`TransactionBuilder: Failed to convert ${arg}: ${e.message}`);
           return arg;
         }
       }
-      console.error(`TransactionBuilder: Processing as other: ${arg}`);
       return arg;
     });
 
