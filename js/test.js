@@ -41,15 +41,15 @@ async function twoVariableReturn() {
 
   console.log('Tuple result outputs:', tupleResult);
 
-  // Use the outputs directly - they're already in the right format
-  // The first element is at index 0, third element at index 2
+  // Second call: use the first and third elements of the tuple (a and c)
+  // Use the output objects directly
   const useTwoVariablesCall = builder.addCall(
     testAbi,
     testAddress,
     "useTwoVariables",
     [
-      tupleResult[0],  // First element 'a'
-      tupleResult[2]   // Third element 'c'
+      tupleResult[0],  // First element 'a' (from index 0)
+      tupleResult[2]   // Third element 'c' (from index 2)
     ],
     BigInt(0),
   );

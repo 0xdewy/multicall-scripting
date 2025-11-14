@@ -24,8 +24,21 @@ module.exports.addCallsAndBuild = function addCallsAndBuild(calls) {
         throw new Error(`Function ${call.functionName} not found in ABI`);
       }
       const processedArgs = call.args.map((arg, index) => {
-        if (arg && typeof arg === "object" && "callIndex" in arg) {
-          return arg;
+        // Check if this is a partial return reference object
+        if (arg && typeof arg === "object" && "callIndex" in arg && "offset" in arg && "size" in arg) {
+          // Ensure all required fields are present
+          if (typeof arg.callIndex !== 'number' || typeof arg.offset !== 'number' || typeof arg.size !== 'number') {
+            throw new Error(`Invalid partial return reference object at index ${index}`);
+          }
+          return {
+            callIndex: arg.callIndex,
+            offset: arg.offset,
+            size: arg.size,
+            // Include other fields if present
+            ...(arg.type && { type: arg.type }),
+            ...(arg.value !== undefined && { value: arg.value }),
+            ...(arg.requiresSizing !== undefined && { requiresSizing: arg.requiresSizing })
+          };
         }
         const inputType = functionAbi.inputs[index].type;
         if (inputType.includes("int") &&
