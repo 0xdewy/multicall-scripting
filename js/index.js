@@ -34,16 +34,27 @@ export class TransactionBuilder {
         return arg;
       }
       // Handle hex strings (including numbers passed as hex)
-      if (typeof arg === "string" && arg.startsWith("0x") && /^0x[0-9a-fA-F]+$/.test(arg)) {
+      if (typeof arg === "string" && arg.startsWith("0x")) {
         try {
-          return BigInt(arg);
+          // Parse hex string to BigInt
+          const result = BigInt(arg);
+          return result;
         } catch (e) {
-          return arg;
+          console.error(`Failed to parse "${arg}" to BigInt: ${e.message}`);
+          throw new Error(`Failed to parse String to BigInt`);
         }
       }
       // Handle regular numbers
       if (typeof arg === "number") {
         return BigInt(arg);
+      }
+      // Handle numeric strings (without 0x prefix)
+      if (typeof arg === "string" && /^-?\d+$/.test(arg)) {
+        try {
+          return BigInt(arg);
+        } catch (e) {
+          return arg;
+        }
       }
       return arg;
     });

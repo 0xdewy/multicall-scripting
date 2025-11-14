@@ -41,11 +41,12 @@ export function addCallsAndBuild(calls) {
         }
 
         // Handle hex strings (including numbers passed as hex)
-        if (typeof arg === "string" && arg.startsWith("0x") && /^0x[0-9a-fA-F]+$/.test(arg)) {
+        if (typeof arg === "string" && arg.startsWith("0x")) {
           try {
             return BigInt(arg);
           } catch (e) {
-            return arg;
+            console.error(`Failed to parse "${arg}" to BigInt: ${e.message}`);
+            throw new Error(`Failed to parse String to BigInt`);
           }
         }
         // Handle regular numbers
@@ -56,18 +57,28 @@ export function addCallsAndBuild(calls) {
         if (typeof arg === "bigint") {
           return arg;
         }
+        // Handle numeric strings (without 0x prefix)
+        if (typeof arg === "string" && /^-?\d+$/.test(arg)) {
+          try {
+            return BigInt(arg);
+          } catch (e) {
+            return arg;
+          }
+        }
 
         // For addresses and other strings, keep as strings
         return arg;
       });
 
-      transactionBuilder.addCall(
+      console.error(`Processing call ${call.functionName} with args:`, processedArgs);
+      const outputs = transactionBuilder.addCall(
         abi,
         call.target,
         call.functionName,
         processedArgs, // Use processed arguments
         call.value ? BigInt(call.value) : 0n,
       );
+      console.error(`Call ${call.functionName} added successfully`);
     } catch (error) {
       throw new Error(`Error processing call ${call.functionName}: ${error.message}`);
     }
