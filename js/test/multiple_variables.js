@@ -55,7 +55,6 @@ function main() {
     BigInt(0),
   );
 
-  console.log("call Result:", callResult);
 
   // Third call: setTuple using first and third elements from the previous static call result
   builder.addCall(
@@ -72,15 +71,20 @@ function main() {
 
   const result = builder.build();
   
+  // Ensure msgValues has the same number of elements as targets, all being "0"
+  // Since all calls use BigInt(0), we can create an array of "0" strings
+  const msgValues = new Array(result.targets.length).fill("0");
+  
   // Serialize the result for comparison
   const serializableResult = {
     targets: result.targets,
     offsets: result.offsets.map((offset) => offset.toString()),
     calldatas: result.calldatas,
-    msgValues: result.msgValues.map((value) => value.toString()),
+    msgValues: msgValues,
   };
+  
+  // Only print the JSON to stdout
   console.log(JSON.stringify(serializableResult));
-  return serializableResult;
 }
 
 main();
