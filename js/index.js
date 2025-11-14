@@ -135,24 +135,56 @@ export class TransactionBuilder {
 
 
     // =============================== Build Outputs ===========================================
-    // TODO: support all types
-    const nextOffset = functionAbi.outputs.reduce((o) => 32);
-    const outputs = functionAbi.outputs.map((output, i) => {
-      let value =
-        if (output.type === "address")
-          ? "0x0000000000000000000000000000000000000000"
-          : output.type === "bool"
-            ? false
-            : 0;
-
-      return {
+    // Calculate offsets for each output, considering dynamic types
+    let staticOffset = 0;
+    let dynamicOffset = functionAbi.outputs.length * 32; // Start dynamic data after all static slots
+    const outputs = [];
+  
+    for (let i = 0; i < functionAbi.outputs.length; i++) {
+      const output = functionAbi.outputs[i];
+    
+      // Determine default value based on type
+      let value;
+      if (output.type === "address") {
+        value = "0x0000000000000000000000000000000000000000";
+      } else if (output.type === "bool") {
+        value = false;
+      } else {
+        value = 0;
+      }
+    
+      // Check if the type is dynamic
+      const isDynamic = output.type === "string" || 
+                        output.type === "bytes" || 
+                        output.type.endsWith("[]");
+    
+      let size;
+      let offset;
+    
+      if (isDynamic) {
+        // For dynamic types, the static part contains the offset to the dynamic data
+        offset = staticOffset;
+        size = 32; // The offset value itself is 32 bytes
+        // The actual data would be at dynamicOffset, but we can't know its size yet
+        // For now, we'll assume 32 bytes for simplicity
+        // In practice, this would need to be adjusted based on actual return data
+        dynamicOffset += 32; // Move dynamic offset for next dynamic item
+      } else {
+        // Static types are stored directly in their slot
+        offset = staticOffset;
+        size = 32;
+      }
+    
+      outputs.push({
         callIndex: this.calls.length - 1,
         type: output.type,
         value,
-        offset: i * 32,
-        size: 32,
-      };
-    });
+        offset: offset,
+        size: size,
+      });
+    
+      staticOffset += 32;
+    }
 
     return outputs;
   }
