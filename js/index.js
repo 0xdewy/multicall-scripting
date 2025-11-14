@@ -67,9 +67,22 @@ export class TransactionBuilder {
 
     // Resolve arguments for ABI lookup, handling CallOutput objects
     // First, process args to ensure numbers are properly handled
+    // Process args to ensure numbers are properly handled
     const processedArgs = args.map((arg) => {
       if (arg && typeof arg === "object" && "callIndex" in arg) {
-        return arg.value;
+        // For call output references, we need to handle them specially
+        // Convert numeric fields to numbers
+        const processedArg = { ...arg };
+        if (typeof arg.callIndex === 'string') {
+          processedArg.callIndex = parseInt(arg.callIndex);
+        }
+        if (typeof arg.offset === 'string') {
+          processedArg.offset = parseInt(arg.offset);
+        }
+        if (typeof arg.size === 'string') {
+          processedArg.size = parseInt(arg.size);
+        }
+        return processedArg;
       }
       // If it's already a BigInt, keep it
       if (typeof arg === "bigint") {
@@ -87,22 +100,23 @@ export class TransactionBuilder {
       if (typeof arg === "number") {
         return BigInt(arg);
       }
+      // Handle numeric strings (without 0x prefix)
+      if (typeof arg === "string" && /^-?\d+$/.test(arg)) {
+        try {
+          return BigInt(arg);
+        } catch (e) {
+          return arg;
+        }
+      }
       return arg;
     });
-
-    const processedArgs = []
     
 
     // =============================== Argument Memory Offsets ===========================================
     // Update where the previous call is saving its output if one of the args is from a previous call
     args.forEach((arg, index) => {
       // Check if this argument references a previous call's output
-      if (
-        arg &&
-        typeof arg === "object" &&
-        "callIndex" in arg &&
-        "value" in arg
-      ) {
+      if (arg && typeof arg === "object" && "callIndex" in arg) {
         const prevCall = this.calls[arg.callIndex];
         // Multiple outputs not yet supported
         if (prevCall.memTargets.length > 0 || prevCall.special) {
@@ -124,8 +138,7 @@ export class TransactionBuilder {
         prevCall.returnDataLens.push(arg.size);
         prevCall.returnDataOffsets.push(arg.offset);
       }
-
-      });
+    });
 
     // =============================== Encode Skeleton Calldata===========================================
     // Encode function call data

@@ -40,33 +40,45 @@ export function addCallsAndBuild(calls) {
           return arg; // Return output reference objects as-is
         }
 
-        // Handle hex strings (including numbers passed as hex)
-        if (typeof arg === "string" && arg.startsWith("0x")) {
-          try {
-            return BigInt(arg);
-          } catch (e) {
-            console.error(`Failed to parse "${arg}" to BigInt: ${e.message}`);
-            throw new Error(`Failed to parse String to BigInt`);
+        // Get the expected type from the ABI
+        const inputType = functionAbi.inputs[index].type;
+        
+        // Handle numeric types (uint, int, bool)
+        if (inputType.startsWith('uint') || inputType.startsWith('int') || inputType === 'bool') {
+          // Handle hex strings
+          if (typeof arg === "string" && arg.startsWith("0x")) {
+            try {
+              return BigInt(arg);
+            } catch (e) {
+              console.error(`Failed to parse "${arg}" to BigInt: ${e.message}`);
+              throw new Error(`Failed to parse String to BigInt`);
+            }
           }
-        }
-        // Handle regular numbers
-        if (typeof arg === "number") {
-          return BigInt(arg);
-        }
-        // Handle BigInt directly
-        if (typeof arg === "bigint") {
-          return arg;
-        }
-        // Handle numeric strings (without 0x prefix)
-        if (typeof arg === "string" && /^-?\d+$/.test(arg)) {
-          try {
+          // Handle regular numbers
+          if (typeof arg === "number") {
             return BigInt(arg);
-          } catch (e) {
+          }
+          // Handle BigInt directly
+          if (typeof arg === "bigint") {
             return arg;
           }
+          // Handle numeric strings (without 0x prefix)
+          if (typeof arg === "string" && /^-?\d+$/.test(arg)) {
+            try {
+              return BigInt(arg);
+            } catch (e) {
+              console.error(`Failed to parse "${arg}" to BigInt: ${e.message}`);
+              throw new Error(`Failed to parse String to BigInt`);
+            }
+          }
         }
-
-        // For addresses and other strings, keep as strings
+        
+        // For addresses, keep as strings (viem can handle them)
+        if (inputType === 'address') {
+          return arg;
+        }
+        
+        // For other types (string, bytes, arrays), keep as is
         return arg;
       });
 
