@@ -75,11 +75,11 @@ contract JsLibrary is Test, CallBuilder, MulticallScripter {
 
         // Call the JavaScript file using FFI
         string[] memory inputs = new string[](4);
-        inputs[0] = "node";
+        inputs[0] = "bun";
         inputs[1] = "js/test/multiple_variables.js";
         inputs[2] = vm.toString(address(dynamicReturn));
         // Get the path to the ABI
-        inputs[3] = "out/DynamicReturn.sol/DynamicReturn.json";
+        inputs[3] = "Helpers.sol/DynamicReturn.json";
         
         bytes memory res = vm.ffi(inputs);
         string memory json = string(res);

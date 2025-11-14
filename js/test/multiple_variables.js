@@ -1,12 +1,13 @@
 const { TransactionBuilder } = require("../index.js");
 const fs = require("fs");
 
+
 function loadABI(path) {
   let content;
   try {
     content = fs.readFileSync(path, "utf8");
   } catch {
-    content = fs.readFileSync(`./${path}`, "utf8");
+    content = fs.readFileSync(`../out/${path}`, "utf8");
   }
   const artifact = JSON.parse(content);
   return Array.isArray(artifact) ? artifact : artifact.abi;
