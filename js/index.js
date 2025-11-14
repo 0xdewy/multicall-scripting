@@ -1,20 +1,20 @@
 // Import required functions from viem
 const { encodeFunctionData, getAbiItem } = require("viem");
 
-// Constants from the Constants.sol
-export const PARTIAL_RETURN_VARS = BigInt(3);
-export const STATIC_CALL_FLAG = BigInt(0xff);
-export const CALL_FLAG = BigInt(0xfe);
-export const DELEGATE_CALL_FLAG = BigInt(0xfd);
-export const STATIC_CALL_PARTIAL_RETURN_FLAG = BigInt(0xfc);
-export const VALUE_OFFSET = BigInt(248);
+// Constants
+const PARTIAL_RETURN_VARS = 3n;
+const STATIC_CALL_FLAG = 0xffn;
+const CALL_FLAG = 0xfen;
+const DELEGATE_CALL_FLAG = 0xfdn;
+const STATIC_CALL_PARTIAL_RETURN_FLAG = 0xfcn;
+const VALUE_OFFSET = 248n;
 
-const UINT120_MAX = BigInt(2 ** 120 - 1);
-const UINT8_MAX = BigInt(255);
-const UINT40_MAX = BigInt(2 ** 40 - 1);
-const UINT16_MAX = BigInt(2 ** 16 - 1);
+const UINT120_MAX = (2n ** 120n) - 1n;
+const UINT8_MAX = 255n;
+const UINT40_MAX = (2n ** 40n) - 1n;
+const UINT16_MAX = (2n ** 16n) - 1n;
 
-export class TransactionBuilder {
+class TransactionBuilder {
   constructor() {
     this.calls = []; // Array to store call objects
     this.freeMemory = 0; // Memory pointer
@@ -51,19 +51,24 @@ export class TransactionBuilder {
       throw new Error(`Number of arguments do not match abi arguments ${args.length} vs ${functionAbi.inputs.length}`);
     }
 
-    functionAbi.inputs.zip(args).forEach((abiInput, arg) => {
-      if (arg.requiresResizing) {
-        throw new Error(`Does not support multiple dynamic outputs yet`);
-      }
-
-      if (["string", "bytes"].contains(abiInput.type) || abiInput.type.contains("[]")) {
-          if (!arg.value) {
+    // Validate dynamic types
+    for (let i = 0; i < functionAbi.inputs.length; i++) {
+      const abiInput = functionAbi.inputs[i];
+      const arg = args[i];
+      
+      // Check if the type is dynamic
+      const isDynamic = abiInput.type === "string" || 
+                        abiInput.type === "bytes" || 
+                        abiInput.type.endsWith("[]");
+      if (isDynamic) {
+          if (!arg || !arg.value) {
             throw new Error(`Must define the value of dynamic arguments. Type: ${abiInput.type} Name: ${abiInput.name}`);
           }
           // TODO: properly parse bytes/string
-          arg.size = arg.value.length / 2;
+          // For now, we'll assume the size is provided or can be derived
+          // arg.size = arg.value.length / 2;
       }
-    });
+    }
 
     // Resolve arguments for ABI lookup, handling CallOutput objects
     // First, process args to ensure numbers are properly handled
@@ -169,9 +174,8 @@ export class TransactionBuilder {
     // =============================== Build Outputs ===========================================
     // Calculate offsets for each output, considering dynamic types
     let staticOffset = 0;
- // Start dynamic data after all static slots and add 32 to account for the length slot
-    let dynamicOffsetStart = functionAbi.outputs.length * 32 + 32;
-    let dynamicOffset = dynamicOffsetStart; // Start dynamic data after all static slots
+    // Start dynamic data after all static slots
+    let dynamicOffset = functionAbi.outputs.length * 32;
     const outputs = [];
   
     for (let i = 0; i < functionAbi.outputs.length; i++) {
@@ -186,7 +190,7 @@ export class TransactionBuilder {
       } else {
         value = 0;
       }
-      // Dynamic types store an offset to the actual start of their data
+      // Check if the type is dynamic
       const isDynamic = output.type === "string" || 
                         output.type === "bytes" || 
                         output.type.endsWith("[]");
@@ -204,9 +208,8 @@ export class TransactionBuilder {
         size = 32;
         staticOffset += 32;
       }
-      // Does this have a dynamic variable earlier in the output that effects its offset?
-      // TODO: need to use special call to handle dynamic data safely
-      let requiresSizing = dynamicOffset > 32 + dynamicOffsetStart ? true : false;
+      // Check if sizing is required
+      let requiresSizing = dynamicOffset > (32 + (functionAbi.outputs.length * 32));
       // Push the outputs
       outputs.push({
         callIndex: this.calls.length - 1, // store this for easy reference later
@@ -216,7 +219,6 @@ export class TransactionBuilder {
         size: size,
         requiresSizing,
       });
-    
     }
 
     return outputs;
@@ -272,3 +274,6 @@ function stateChangingCall(msgValueIndex = 0) {
   if (mvi > UINT8_MAX) throw new Error("msgValueIndex too large");
   return (CALL_FLAG << VALUE_OFFSET) | (mvi << 240n);
 }
+
+// Export the class and functions
+module.exports = { TransactionBuilder, staticCall, stateChangingCall };
