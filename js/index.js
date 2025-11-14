@@ -2,19 +2,19 @@
 const { encodeFunctionData, getAbiItem } = require("viem");
 
 // Constants from the Constants.sol
-export const PARTIAL_RETURN_VARS = BigInt(3);
-export const STATIC_CALL_FLAG = BigInt(0xff);
-export const CALL_FLAG = BigInt(0xfe);
-export const DELEGATE_CALL_FLAG = BigInt(0xfd);
-export const STATIC_CALL_PARTIAL_RETURN_FLAG = BigInt(0xfc);
-export const VALUE_OFFSET = BigInt(248);
+const PARTIAL_RETURN_VARS = 3n;
+const STATIC_CALL_FLAG = 0xffn;
+const CALL_FLAG = 0xfen;
+const DELEGATE_CALL_FLAG = 0xfdn;
+const STATIC_CALL_PARTIAL_RETURN_FLAG = 0xfcn;
+const VALUE_OFFSET = 248n;
 
-const UINT120_MAX = BigInt(2 ** 120 - 1);
-const UINT8_MAX = BigInt(255);
-const UINT40_MAX = BigInt(2 ** 40 - 1);
-const UINT16_MAX = BigInt(2 ** 16 - 1);
+const UINT120_MAX = (2n ** 120n) - 1n;
+const UINT8_MAX = 255n;
+const UINT40_MAX = (2n ** 40n) - 1n;
+const UINT16_MAX = (2n ** 16n) - 1n;
 
-export class TransactionBuilder {
+class TransactionBuilder {
   constructor() {
     this.calls = []; // Array to store call objects
     this.freeMemory = 0; // Memory pointer
@@ -227,12 +227,15 @@ export class TransactionBuilder {
   }
 }
 
+// Export the class and functions
+module.exports = { TransactionBuilder, staticCall, stateChangingCall, staticCallPartialReturn };
+
 
 // ===========================================Helpers===========================================
 
 // staticCall: Emulates a static call with memory target and result length
 // <calltype><valueIndex><memTarget><resultLength>
-export function staticCall(memTarget, resultLength) {
+function staticCall(memTarget, resultLength) {
   memTarget = BigInt(memTarget);
   resultLength = BigInt(resultLength);
   const calltypePart = STATIC_CALL_FLAG << VALUE_OFFSET;
@@ -243,7 +246,7 @@ export function staticCall(memTarget, resultLength) {
 }
 
 // stateChangingCall
-export function stateChangingCall(msgValueIndex = 0) {
+function stateChangingCall(msgValueIndex = 0) {
   return _stateChangingCall(msgValueIndex, 0, 0);
 }
 
@@ -275,7 +278,7 @@ function _stateChangingCall(msgValueIndex, memTarget, resultLength) {
 }
 
 // staticCallPartialReturn: To make a static call and use multiple return vars
-export function staticCallPartialReturn(
+function staticCallPartialReturn(
   memTargets,
   resultLengths,
   returnOffsets,
@@ -339,7 +342,5 @@ export function staticCallPartialReturn(
 }
 
 function isDynamicData(abiInput) {
-      // TODO: exhaust all ABI options
-      if (["string", "bytes"].includes(abiInput.type) || abiInput.type.includes("[]")) {
-      }
+      return ["string", "bytes"].includes(abiInput.type) || abiInput.type.endsWith("[]");
 }
