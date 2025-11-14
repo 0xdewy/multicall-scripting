@@ -104,6 +104,7 @@ export class TransactionBuilder {
       return arg;
     });
 
+    // =============================== Encode Skeleton Calldata===========================================
     // Encode function call data
     const fnCalldata = encodeFunctionData({
       abi,
@@ -111,6 +112,8 @@ export class TransactionBuilder {
       args: resolvedArgs,
     });
 
+
+    // =============================== Store Call + Update Free Memory ===========================================
     // Create call object
     this.calls.push({
       target,
@@ -123,10 +126,11 @@ export class TransactionBuilder {
       msgValue,
       special: false,
     });
-
     // Update memory pointer (fnCalldata is a hex string, so length / 2 gives byte count)
     this.freeMemory += fnCalldata.length / 2;
 
+
+    // =============================== Build Outputs ===========================================
     // TODO: support all types
     const outputs = functionAbi.outputs.map((output, i) => {
       let value =
