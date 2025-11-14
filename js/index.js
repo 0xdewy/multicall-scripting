@@ -33,17 +33,18 @@ export class TransactionBuilder {
       if (typeof arg === "bigint") {
         return arg;
       }
-      // For very large numbers, keep them as strings - viem can handle them
-      if (typeof arg === "string" && /^-?\d+$/.test(arg) && arg.length > 15) {
-        return arg;
-      }
-      // Handle regular numbers and smaller numeric strings
-      if (typeof arg === "number" || (typeof arg === "string" && /^-?\d+$/.test(arg))) {
+      // Handle all numeric strings by converting them to BigInt
+      if (typeof arg === "string" && /^-?\d+$/.test(arg)) {
         try {
           return BigInt(arg);
         } catch (e) {
+          // If parsing fails, keep as string
           return arg;
         }
+      }
+      // Handle regular numbers
+      if (typeof arg === "number") {
+        return BigInt(arg);
       }
       return arg;
     });
