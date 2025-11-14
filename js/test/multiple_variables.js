@@ -1,39 +1,57 @@
-const { encodeFunctionData, getAbiItem } = require("viem");
-const { TransactionBuilder } = require("./index.js");
+const { TransactionBuilder } = require("../index.js");
+const fs = require("fs");
 
+function loadABI(path) {
+  let content;
+  try {
+    content = fs.readFileSync(path, "utf8");
+  } catch {
+    content = fs.readFileSync(`./${path}`, "utf8");
+  }
+  const artifact = JSON.parse(content);
+  return Array.isArray(artifact) ? artifact : artifact.abi;
+}
 
-  // TODO: parse args 
-  //  args: [abi_path, targetAddress]
-
+function main() {
+  const targetAddress = process.argv[2];
+  const abiPath = process.argv[3];
+  
+  const abi = loadABI(abiPath);
   const builder = new TransactionBuilder();
   
-  // First call: get tuple which returns (a, b, c)
+  // First call: getTupleConstant() returns (1, 2, 3)
   const tupleResult = builder.addCall(
-    testAbi,
-    testAddress,
-    "getTuple",
+    abi,
+    targetAddress,
+    "getTupleConstant",
     [],
     BigInt(0),
   );
 
-  console.log('Tuple result outputs:', tupleResult);
-
-  // Second call: use the first and third elements of the tuple (a and c)
-  // Use the output objects directly
-  const useTwoVariablesCall = builder.addCall(
-    testAbi,
-    testAddress,
-    "useTwoVariables",
+  // Second call: setTuple using first and third elements from the tuple
+  const setTupleCall = builder.addCall(
+    abi,
+    targetAddress,
+    "setTuple",
     [
-      tupleResult[0],  // First element 'a' (from index 0)
-      tupleResult[2]   // Third element 'c' (from index 2)
+      { callIndex: 0, offset: 0, size: 32 },  // First element (1)
+      "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", // max uint
+      { callIndex: 0, offset: 64, size: 32 }  // Third element (3)
     ],
     BigInt(0),
   );
 
-  console.log('Use two variables call outputs:', useTwoVariablesCall);
-
   const result = builder.build();
-  console.log('Built transaction:', result);
+  
+  // Serialize the result for comparison
+  const serializableResult = {
+    targets: result.targets,
+    offsets: result.offsets.map((offset) => offset.toString()),
+    calldatas: result.calldatas,
+    msgValues: result.msgValues.map((value) => value.toString()),
+  };
+  console.log(JSON.stringify(serializableResult));
 }
+
+main();
 
