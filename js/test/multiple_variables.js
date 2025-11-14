@@ -51,6 +51,7 @@ function main() {
     msgValues: result.msgValues.map((value) => value.toString()),
   };
   console.log(JSON.stringify(serializableResult));
+  return serializeableResult;
 }
 
 main();
