@@ -39,12 +39,17 @@ export function addCallsAndBuild(calls) {
         return arg; // Return output reference objects as-is
       }
 
-      // Handle numbers - always convert to BigInt
+      // For very large numbers (like type(uint256).max), keep them as strings
+      // viem's encodeFunctionData can handle numeric strings directly
+      if (typeof arg === "string" && /^-?\d+$/.test(arg) && arg.length > 15) {
+        // Keep very large numbers as strings to avoid BigInt parsing issues
+        return arg;
+      }
+      // Handle regular numbers
       if (typeof arg === "number") {
-        // For numbers, convert to BigInt directly
         return BigInt(arg);
       }
-      // Handle numeric strings
+      // Handle smaller numeric strings
       if (typeof arg === "string" && /^-?\d+$/.test(arg)) {
         try {
           return BigInt(arg);

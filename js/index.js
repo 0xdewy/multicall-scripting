@@ -33,7 +33,11 @@ export class TransactionBuilder {
       if (typeof arg === "bigint") {
         return arg;
       }
-      // Handle numbers and numeric strings
+      // For very large numbers, keep them as strings - viem can handle them
+      if (typeof arg === "string" && /^-?\d+$/.test(arg) && arg.length > 15) {
+        return arg;
+      }
+      // Handle regular numbers and smaller numeric strings
       if (typeof arg === "number" || (typeof arg === "string" && /^-?\d+$/.test(arg))) {
         try {
           return BigInt(arg);
