@@ -55,6 +55,7 @@ function main() {
     BigInt(0),
   );
 
+  console.log("callResult: ", callResult);
 
   // Third call: setTuple using first and third elements from the previous static call result
   builder.addCall(
@@ -85,6 +86,7 @@ function main() {
   
   // Only print the JSON to stdout
   console.log(JSON.stringify(serializableResult));
+  //return JSON.stringify(serializableResult);
 }
 
 main();
