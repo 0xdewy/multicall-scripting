@@ -169,7 +169,8 @@ export class TransactionBuilder {
     // =============================== Build Outputs ===========================================
     // Calculate offsets for each output, considering dynamic types
     let staticOffset = 0;
-    let dynamicOffsetStart = functionAbi.outputs.length * 32; // Start dynamic data after all static slots
+ // Start dynamic data after all static slots and add 32 to account for the length slot
+    let dynamicOffsetStart = functionAbi.outputs.length * 32 + 32;
     let dynamicOffset = dynamicOffsetStart; // Start dynamic data after all static slots
     const outputs = [];
   
@@ -185,7 +186,7 @@ export class TransactionBuilder {
       } else {
         value = 0;
       }
-      // Check if the type is dynamic
+      // Dynamic types store an offset to the actual start of their data
       const isDynamic = output.type === "string" || 
                         output.type === "bytes" || 
                         output.type.endsWith("[]");
