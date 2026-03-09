@@ -9,12 +9,9 @@ function main() {
   const abi = loadABI(abiPath);
   const builder = new TransactionBuilder();
 
-  const complexStruct = {
-        a: 1,
-        nested: {
-            nA: 2,
-            nB: 3
-        }
+  const doubleDynamic = {
+      first: "test",
+      second: "test",
    };
   
   // First call: setTuple(max, max, max) - state changing
@@ -26,13 +23,14 @@ function main() {
     BigInt(0),
   );
 
-  complexStruct.nested.nB = retStruct.nested.nB;
+  // TODO: contract will not be able to know how large the first dynamic var is
+  doubleDynamic.second = retStruct.second;
 
   builder.addCall(
     abi,
     targetAddress,
-    "setComplexStruct",
-    [complexStruct],
+    "setDDStruct",
+    [doubleDynamic],
     BigInt(0),
   );
 
