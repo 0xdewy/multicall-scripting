@@ -107,3 +107,30 @@ contract DynamicReturn {
         return TuplePacked(1, 2, 3);
     }
 }
+
+contract Structs {
+    struct Complex {
+        uint256 a;
+        Static nested;
+    }
+
+    struct Static {
+        uint256 nA;
+        uint256 nB;
+    }
+
+    Complex complexStruct;
+
+    function setComplexStruct(Complex calldata s) public {
+        complexStruct = s;
+    }
+
+    function getComplexStruct() public view returns (Complex memory s) {
+        s = complexStruct;
+    }
+
+    function getConstantStruct() public pure returns (Complex memory s) {
+        Static memory _static = Static(200, 300);
+        s = Complex(100, _static);
+    }
+}

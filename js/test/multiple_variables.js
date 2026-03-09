@@ -1,28 +1,6 @@
 const { TransactionBuilder } = require("../index.js");
+const { loadABI } = require("./common.js");
 const fs = require("fs");
-
-
-function loadABI(path) {
-  let content;
-  // Try to read from the provided path directly
-  try {
-    content = fs.readFileSync(path, "utf8");
-  } catch {
-    // If that fails, try to prepend 'out/'
-    try {
-      content = fs.readFileSync(`out/${path}`, "utf8");
-    } catch {
-      // If that also fails, try to prepend '../out/'
-      try {
-        content = fs.readFileSync(`../out/${path}`, "utf8");
-      } catch {
-        throw new Error(`Could not find ABI file at paths: ${path}, out/${path}, ../out/${path}`);
-      }
-    }
-  }
-  const artifact = JSON.parse(content);
-  return Array.isArray(artifact) ? artifact : artifact.abi;
-}
 
 function main() {
   const targetAddress = process.argv[2];
@@ -70,9 +48,8 @@ function main() {
 
   const result = builder.build();
   
-  // Ensure msgValues has the same number of elements as targets, all being "0"
-  // Since all calls use BigInt(0), we can create an array of "0" strings
-  const msgValues = new Array(result.targets.length);
+  // Convert msgValues from BigInt to numbers for JSON serialization
+  const msgValues = result.msgValues.map(v => Number(v));
   
   // Serialize the result for comparison
   const serializableResult = {

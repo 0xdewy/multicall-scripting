@@ -17,6 +17,9 @@ contract Constants {
 }
 
 contract MulticallScripter is Constants {
+    // 0x8f61746f
+    error InvalidCalltype(uint256 calltype);
+
     /*
       Execute a sequence of calls with the ability to use return data in subsequent calls
     */
@@ -92,12 +95,6 @@ contract MulticallScripter is Constants {
                     continue
                 }
 
-                // delegate call (0xFD)
-                if eq(callType, DELEGATE_CALL_FLAG) {
-                    // TODO: delegate call?
-                    continue
-                }
-
                 // static call with partial return (0xFC)
                 if eq(callType, STATIC_CALL_PARTIAL_RETURN_FLAG) {
                     // return size is modified for this type of call
@@ -161,8 +158,14 @@ contract MulticallScripter is Constants {
                     continue
                 }
 
+                // delegate call (0xFD)
+                if eq(callType, DELEGATE_CALL_FLAG) {
+                    // TODO: delegate call?
+                    continue
+                }
+
                 // TODO: 0x420 is not a very descriptive error message
-                mstore(0x00, 0x420)
+                mstore(0x00, 0x8f61746f)
                 revert(0x00, 0x20)
             }
         }

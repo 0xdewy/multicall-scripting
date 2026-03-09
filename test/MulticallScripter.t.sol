@@ -134,6 +134,34 @@ contract MulticallScriptTest is Test, CallBuilder, MulticallScripter {
         assertEq(simpleReturn.getUint(), 0x69);
     }
 
+    function test_raw_data_multiple_values() public {
+        calldatas.push(abi.encodeWithSelector(SimpleReturn.setUintValue.selector));
+        targets.push(address(simpleReturn));
+        offsets.push(stateChangingCall(0x1));
+        values.push(1);
+
+        calldatas.push(abi.encodeWithSelector(SimpleReturn.setUintValue.selector));
+        targets.push(address(simpleReturn));
+        offsets.push(stateChangingCall(0x2));
+        values.push(69e18);
+
+        // send exact amount
+        multicall.execute{value: 69e18 + 1}(targets, offsets, calldatas, values);
+        assertEq(simpleReturn.getUint(), 69e18);
+        assertEq(address(simpleReturn).balance, 69e18 + 1);
+
+        // Run calls again but finish with first value
+        calldatas.push(abi.encodeWithSelector(SimpleReturn.setUintValue.selector));
+        targets.push(address(simpleReturn));
+        offsets.push(stateChangingCall(0x1));
+
+        // Send too much and make sure the rest is returned
+        multicall.execute{value: 100e18}(targets, offsets, calldatas, values);
+
+        assertEq(simpleReturn.getUint(), 1);
+        assertEq(address(simpleReturn).balance, (69e18 + 1) * 2 + 1);
+    }
+
     function test_raw_data_simple_value() public {
         calldatas.push(abi.encodeWithSelector(SimpleReturn.setUintValue.selector));
         targets.push(address(simpleReturn));
@@ -253,6 +281,9 @@ contract MulticallScriptTest is Test, CallBuilder, MulticallScripter {
         assertEq(c, 3);
     }
 
+    // changeState(startData) -> returns true
+    // x = changeState(startData) -> returns false
+    // setBool(x)
     function test_fuzz_bytes(bytes calldata startData) public {
         calldatas.push(abi.encodeWithSelector(Fuzzy.changeState.selector, startData));
         targets.push(address(fuzzy));

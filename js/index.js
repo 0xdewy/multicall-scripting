@@ -23,7 +23,6 @@ export class TransactionBuilder {
   // Add a call to the script
   // TODO: support overriding the calltype (static/call)
   addCall(abi, target, functionName, args, msgValue = BigInt(0)) {
-    
 
     // =============================== Load ABI ===========================================
     const functionAbi = getAbiItem({
@@ -50,6 +49,7 @@ export class TransactionBuilder {
     if (args.length != functionAbi.inputs.length) {
       throw new Error(`Number of arguments do not match abi arguments ${args.length} vs ${functionAbi.inputs.length}`);
     }
+
     // Dynamic data safety check
     // TODO: add support in contract to parse dynamic data properly
     functionAbi.inputs.forEach((abiInput, arg) => {
@@ -57,6 +57,7 @@ export class TransactionBuilder {
         throw new Error(`Does not support multiple dynamic outputs yet`);
       }
     });
+
     // Make sure dynamic data has been manually input
     functionAbi.inputs.forEach((abiInput, i) => {
       // Dynamic types must be input properly
@@ -127,6 +128,7 @@ export class TransactionBuilder {
       returnDataSize: 0,
       msgValue,
     });
+
     // Update memory pointer (fnCalldata is a hex string, so length / 2 gives byte count)
     this.freeMemory += fnCalldata.length / 2;
 
@@ -142,8 +144,9 @@ export class TransactionBuilder {
         formattedOutputs.push(o);
       }
     });
+
     // Determine default value based on type
-    const values = formattedOutputs.map(o => {
+    const values = formattedOutputs.map(output => {
       if (output.type == "address") {
         return "0x0000000000000000000000000000000000000000";
       } else if (output.type == "bool") {
@@ -158,11 +161,14 @@ export class TransactionBuilder {
         return 0;
       }
     });
+
     // Start dynamic data after all static slots and add 32 to account for the length slot
     let dynamicOffsetStart = functionAbi.outputs.length * 32 + 32;
     let dynamicOffset = dynamicOffsetStart; // Start dynamic data after all static slots
+
     const outputs = [];
     let staticOffset = 0;
+      
     // TODO: clean this for loop up
     for (let i = 0; i < formattedOutputs.length; i++) {
       const output = formattedOutputs[i];
@@ -179,8 +185,10 @@ export class TransactionBuilder {
         offset = staticOffset;
         staticOffset += 32;
       }
+
       // Does this have a dynamic variable earlier in the output that effects its offset?
       let requiresSizing = dynamicOffset > 32 + dynamicOffsetStart ? true : false;
+
       // Push the outputs
       outputs.push({
         callIndex: this.calls.length - 1, // store this for easy reference later
@@ -203,33 +211,47 @@ export class TransactionBuilder {
     let calldatas = [];
     let msgValues = [];
 
-
     for (let i = 0; i < this.calls.length; i++) {
       const _call = this.calls[i];
       targets.push(_call.target);
       calldatas.push(_call.fnCalldata);
+        
+      // Make sure no more than 3 variables are being accessed
       if (_call.memTargets.length > 3) {
         throw Error(`trying to use too many variables from one call. 3 is maximum. used: ${memTargets.length}`);
       }
+
       // Use multiple output values? 
       if (_call.memTargets.length > 1) {
         offsets.push(staticCallPartialReturn(_call.memTargets, _call.resultLengths, _call.returnOffsets, _call.returnDataSize));
         continue;
       }
+
+      // Get the target memory offset
       let memTarget = _call.memTargets.length > 0 ? _call.memTargets[0] : 0;
+
+      // Get the return data memory offset
       let returnData =
         _call.resultLengths.length > 0 ? _call.resultLengths[0] : 0;
+
+      // Verify calltype flag is valid
+      if (_call.calltype_flag != STATIC_CALL_FLAG && _call.calltype_flag != CALL_FLAG) {
+        throw Error(`Trying to use invalid calltype flag ${_call.calltype_flag}`);
+      }
+
       // Encode msgvalue and calltype
       if (_call.calltype_flag == STATIC_CALL_FLAG) {
         offsets.push(staticCall(memTarget, returnData));
-      } else if (_call.calltype_flag == CALL_FLAG) {
+        continue;
+      }
+
+      // State changing call
+      if (_call.msgValue > 0) {
         // NOTE: msg.value index is confusing:  0 == no msg.value, 1 == index 0
-        if (_call.msgValue > 0) {
-          offsets.push(stateChangingCall(msgValues.length + 1));
-          msgValues.push(_call.msgValue);
-        } else {
-          offsets.push(stateChangingCall());
-        }
+        offsets.push(stateChangingCall(msgValues.length + 1));
+        msgValues.push(_call.msgValue);
+      } else {
+        offsets.push(stateChangingCall());
       }
     }
     return { targets, offsets, calldatas, msgValues };
