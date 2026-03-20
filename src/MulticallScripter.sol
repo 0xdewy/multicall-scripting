@@ -28,7 +28,7 @@ contract MulticallScripter is Constants {
         uint256[] calldata offsets,
         bytes[] calldata calldatas,
         uint256[] calldata values
-    ) public payable {
+    ) public payable virtual {
         // Note: calldata byte array is encoded as follows:
         // [length(dataOffset), offset1, offset2, length1, data1, length2, data2]
         assembly {
