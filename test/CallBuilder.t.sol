@@ -23,7 +23,7 @@ contract MulticallScriptTest is Test, CallBuilder, MulticallScripter, UniV2 {
     uint256 constant ETH_START_BALANCE = 100 ether;
 
     function setUp() public {
-        vm.createSelectFork(vm.envString("ETH_RPC_URL"), 18_000_000);
+        vm.createSelectFork("https://eth.drpc.org", 18_100_000);
         multicall = new MulticallScripter();
         scripter = new Scripter();
         math = new Math();

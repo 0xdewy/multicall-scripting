@@ -134,3 +134,22 @@ contract Structs {
         s = Complex(100, _static);
     }
 }
+
+contract DynamicVar {
+    address[] addr;
+
+    function setAddresses(address[] calldata s) public {
+        addr = s;
+    }
+
+    function getAddresses() public view returns (address[] memory s) {
+        s = addr;
+    }
+
+    function getConstantAddresses() public pure returns (address[] memory s) {
+        s = new address[](3);
+        s[0] = address(0xCAFE);
+        s[1] = address(0xBEEF);
+        s[2] = address(0xDEAD);
+    }
+}

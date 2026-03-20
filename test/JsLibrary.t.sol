@@ -61,6 +61,10 @@ contract JsLibrary is Test, CallBuilder, MulticallScripter {
         bytes[] memory jsCalldatasArray = abi.decode(jsCalldatas, (bytes[]));
         bytes memory jsMsgValues = vm.parseJson(json, ".msgValues");
         uint256[] memory jsMsgValuesArray = abi.decode(jsMsgValues, (uint256[]));
+
+        multicall.execute(jsTargetsArray, jsOffsetsArray, jsCalldatasArray, jsMsgValuesArray);
+
+        assertEq(abi.encode(structs.getComplexStruct()), abi.encode(complex), "Wrong value was set");
     }
 
     function test_js_raw_data_simple_value() public {

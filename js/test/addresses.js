@@ -9,30 +9,22 @@ function main() {
     const abi = loadABI(abiPath);
     const builder = new TransactionBuilder();
 
-    const complexStruct = {
-        a: 1,
-        nested: {
-            nA: 2,
-            nB: 3
-        }
-    };
-
     // First call: setTuple(max, max, max) - state changing
-    const retStruct = builder.addCall(
+    const retAddresses = builder.addCall(
         abi,
         targetAddress,
-        "getConstantStruct",
+        "getConstantAddresses",
         [],
         BigInt(0),
     );
 
-    complexStruct.nested.nB = retStruct.nested.nB;
+    retAddresses.with_length(3);
 
     builder.addCall(
         abi,
         targetAddress,
-        "setComplexStruct",
-        [complexStruct],
+        "setAddresses",
+        [retAddresses],
         BigInt(0),
     );
 

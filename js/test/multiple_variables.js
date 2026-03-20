@@ -39,9 +39,9 @@ function main() {
     targetAddress,
     "setTuple",
     [
-      callResult[0],
+      callResult.a,
       BigInt("0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"), // max uint
-      callResult[2],
+      callResult.c,
     ],
     BigInt(0),
   );
