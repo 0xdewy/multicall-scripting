@@ -206,6 +206,16 @@ contract SevenSevenZeroTwoCaller is MulticallScripter {
         bytes[] calldata calldatas,
         uint256[] calldata values
     ) public payable override onlyEntryPointOrAuthorized {
+        // Emit event before execution for better gas tracking
+        emit Executed(
+            msg.sender,
+            targets,
+            offsets,
+            calldatas,
+            values,
+            ""
+        );
+        
         super.execute(targets, offsets, calldatas, values);
     }
     
