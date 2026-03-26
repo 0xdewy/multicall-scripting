@@ -14,86 +14,21 @@ const { createWalletClient, createPublicClient, http } = require("viem");
 const { privateKeyToAccount } = require("viem/accounts");
 const { startAnvil, stopAnvil } = require("./anvilFork.js");
 
-// Contract addresses
-const ADDRESSES = {
-  WETH: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
-  DAI: "0x6B175474E89094C44Da98b954EedeAC495271d0F",
-  USDC: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
-  UNISWAP_V2_ROUTER: "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D",
-  CURVE_DAI_USDC_USDT_POOL: "0xbEbc44782C7dB0a1A60Cb6fe97d0b483032FF1C7"
-};
+// Import all ABIs and addresses from abis.js
+const {
+    ERC20_ABI,
+    WETH_ABI,
+    UNISWAP_V2_ROUTER_ABI,
+    CURVE_POOL_ABI,
+    ADDRESSES
+} = require("./abis.js");
 
-// ABIs
-const ERC20_ABI = [
-  {
-    type: "function",
-    name: "approve",
-    inputs: [
-      { name: "spender", type: "address" },
-      { name: "amount", type: "uint256" }
-    ],
-    outputs: [{ name: "", type: "bool" }],
-    stateMutability: "nonpayable"
-  },
-  {
-    type: "function",
-    name: "balanceOf",
-    inputs: [{ name: "account", type: "address" }],
-    outputs: [{ name: "", type: "uint256" }],
-    stateMutability: "view"
-  },
-  {
-    type: "function",
-    name: "transfer",
-    inputs: [
-      { name: "to", type: "address" },
-      { name: "amount", type: "uint256" }
-    ],
-    outputs: [{ name: "", type: "bool" }],
-    stateMutability: "nonpayable"
-  }
-];
-
-const WETH_ABI = [
-  {
-    type: "function",
-    name: "deposit",
-    inputs: [],
-    outputs: [],
-    stateMutability: "payable"
-  }
-];
-
-const UNISWAP_V2_ROUTER_ABI = [
-  {
-    type: "function",
-    name: "swapExactTokensForTokens",
-    inputs: [
-      { name: "amountIn", type: "uint256" },
-      { name: "amountOutMin", type: "uint256" },
-      { name: "path", type: "address[]" },
-      { name: "to", type: "address" },
-      { name: "deadline", type: "uint256" }
-    ],
-    outputs: [{ name: "amounts", type: "uint256[]" }],
-    stateMutability: "nonpayable"
-  }
-];
-
-const CURVE_POOL_ABI = [
-  {
-    type: "function",
-    name: "exchange",
-    inputs: [
-      { name: "i", type: "int128" },
-      { name: "j", type: "int128" },
-      { name: "dx", type: "uint256" },
-      { name: "min_dy", type: "uint256" }
-    ],
-    outputs: [{ name: "", type: "uint256" }],
-    stateMutability: "nonpayable"
-  }
-];
+// Import helper functions
+const {
+    getMulticallScripterABI,
+    deployMulticallScripter,
+    printStrategy
+} = require("./helpers.js");
 
 // Test account
 const TEST_PRIVATE_KEY = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
@@ -121,40 +56,18 @@ async function main() {
     const initialBalance = await publicClient.getBalance({ address: account.address });
     console.log(`💰 Initial ETH balance: ${formatEther(initialBalance)} ETH\n`);
     
-    // 1. Deploy MulticallScripter
-    console.log('1. Deploying MulticallScripter...');
-    const { execSync } = require('child_process');
-    const bytecode = execSync('forge inspect MulticallScripter bytecode', { cwd: process.cwd() }).toString().trim();
+    // 1. Deploy MulticallScripter using helper
+    const multicallAddress = await deployMulticallScripter(walletClient, publicClient, account);
     
-    const deployHash = await walletClient.deployContract({
-      abi: [{ type: "constructor", inputs: [], stateMutability: "nonpayable" }],
-      bytecode,
-      account,
-    });
-    
-    const deployReceipt = await publicClient.waitForTransactionReceipt({ hash: deployHash });
-    const multicallAddress = deployReceipt.contractAddress;
-    console.log(`   Contract: ${multicallAddress}\n`);
+    // Get MulticallScripter ABI
+    const multicallScripterABI = getMulticallScripterABI();
     
     // Create contract instance
     const multicallScripter = {
       write: async (functionName, args, options) => {
         return await walletClient.writeContract({
           address: multicallAddress,
-          abi: [
-            {
-              type: "function",
-              name: "execute",
-              inputs: [
-                { name: "targets", type: "address[]" },
-                { name: "offsets", type: "uint256[]" },
-                { name: "calldatas", type: "bytes[]" },
-                { name: "values", type: "uint256[]" }
-              ],
-              outputs: [{ name: "", type: "bytes[]" }],
-              stateMutability: "payable"
-            }
-          ],
+          abi: multicallScripterABI,
           functionName,
           args,
           ...options
@@ -166,7 +79,7 @@ async function main() {
     console.log('2. Building DeFi transaction with transfer...');
     const builder = new TransactionBuilder();
     
-    const initialEth = parseEther("0.01");
+    const initialEth = parseEther("1");
     
     console.log(`   Strategy: ${formatEther(initialEth)} ETH → WETH → DAI → USDC → User`);
     console.log('   Steps:');
@@ -207,34 +120,55 @@ async function main() {
     
     // Step 4: Approve DAI for Curve
     console.log(`   4. Approve DAI for Curve swap`);
-    const daiForCurveSwap = parseEther("10");
+
+    const daiBalanceToApprove = builder.addCall(
+      ERC20_ABI,
+      ADDRESSES.DAI,
+      "balanceOf",
+      [multicallAddress],
+      0n
+    );
+
     builder.addCall(
       ERC20_ABI,
       ADDRESSES.DAI,
       "approve",
-      [ADDRESSES.CURVE_DAI_USDC_USDT_POOL, daiForCurveSwap],
+      [ADDRESSES.CURVE_DAI_USDC_USDT_POOL, daiBalanceToApprove],
       0n
     );
     
+    const daiToSwap = builder.addCall(
+      ERC20_ABI,
+      ADDRESSES.DAI,
+      "balanceOf",
+      [multicallAddress],
+      0n
+    );
     // Step 5: Curve swap DAI → USDC
-    console.log(`   5. Swap ${formatEther(daiForCurveSwap)} DAI → USDC on Curve`);
     const curveMinOut = 0n;
     builder.addCall(
       CURVE_POOL_ABI,
       ADDRESSES.CURVE_DAI_USDC_USDT_POOL,
       "exchange",
-      [0, 1, daiForCurveSwap, curveMinOut],
+      [0, 1, daiToSwap, curveMinOut],
       0n
     );
     
     // Step 6: Transfer USDC to user (approximate amount - in reality would need return value)
     console.log(`   6. Transfer USDC to user account`);
-    const estimatedUsdc = 9n * 10n ** 6n; // ~9 USDC based on previous runs
+
+    const usdcOut = builder.addCall(
+      ERC20_ABI,
+      ADDRESSES.USDC,
+      "balanceOf",
+      [multicallAddress],
+      0n
+    );
     builder.addCall(
       ERC20_ABI,
       ADDRESSES.USDC,
       "transfer",
-      [account.address, estimatedUsdc],
+      [account.address, usdcOut],
       0n
     );
     
@@ -322,7 +256,6 @@ async function main() {
       console.log('🎯 SUCCESS! Complete DeFi strategy executed.');
       console.log(`   • Wrapped ${formatEther(initialEth)} ETH → WETH`);
       console.log(`   • Swapped WETH → DAI via Uniswap V2`);
-      console.log(`   • Swapped ${formatEther(daiForCurveSwap)} DAI → USDC via Curve`);
       console.log(`   • Transferred USDC to user account`);
       console.log(`   • User received: ${userUsdcBalance / 10n ** 6n} USDC`);
       console.log(`   • Gas used: ${receipt.gasUsed}`);

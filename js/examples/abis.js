@@ -170,6 +170,122 @@ const AAVE_POOL_ABI = [
     }
 ];
 
+// Uniswap V2 Pair ABI
+const UNISWAP_V2_PAIR_ABI = [
+    {
+        type: "function",
+        name: "getReserves",
+        inputs: [],
+        outputs: [
+            { name: "reserve0", type: "uint112" },
+            { name: "reserve1", type: "uint112" },
+            { name: "blockTimestampLast", type: "uint32" }
+        ],
+        stateMutability: "view"
+    }
+];
+
+// Struct Test ABI for advanced struct handling
+const STRUCT_TEST_ABI = [
+    {
+        type: "function",
+        name: "getComplexStruct",
+        inputs: [],
+        outputs: [
+            {
+                name: "s",
+                type: "tuple",
+                components: [
+                    { name: "a", type: "uint256" },
+                    { 
+                        name: "nested", 
+                        type: "tuple",
+                        components: [
+                            { name: "nA", type: "uint256" },
+                            { name: "nB", type: "uint256" }
+                        ]
+                    }
+                ]
+            }
+        ],
+        stateMutability: "view"
+    },
+    {
+        type: "function",
+        name: "setComplexStruct",
+        inputs: [
+            {
+                name: "s",
+                type: "tuple",
+                components: [
+                    { name: "a", type: "uint256" },
+                    { 
+                        name: "nested", 
+                        type: "tuple",
+                        components: [
+                            { name: "nA", type: "uint256" },
+                            { name: "nB", type: "uint256" }
+                        ]
+                    }
+                ]
+            }
+        ],
+        outputs: [],
+        stateMutability: "nonpayable"
+    },
+    {
+        type: "function",
+        name: "getConstantStruct",
+        inputs: [],
+        outputs: [
+            {
+                name: "s",
+                type: "tuple",
+                components: [
+                    { name: "a", type: "uint256" },
+                    { 
+                        name: "nested", 
+                        type: "tuple",
+                        components: [
+                            { name: "nA", type: "uint256" },
+                            { name: "nB", type: "uint256" }
+                        ]
+                    }
+                ]
+            }
+        ],
+        stateMutability: "pure"
+    },
+    {
+        type: "function",
+        name: "getTupleConstant",
+        inputs: [],
+        outputs: [
+            {
+                name: "",
+                type: "tuple",
+                components: [
+                    { name: "a", type: "uint256" },
+                    { name: "b", type: "uint256" },
+                    { name: "c", type: "uint256" }
+                ]
+            }
+        ],
+        stateMutability: "pure"
+    },
+    {
+        type: "function",
+        name: "setTuple",
+        inputs: [
+            { name: "a", type: "uint256" },
+            { name: "b", type: "uint256" },
+            { name: "c", type: "uint256" }
+        ],
+        outputs: [],
+        stateMutability: "nonpayable"
+    }
+];
+
 // Contract addresses (mainnet)
 const ADDRESSES = {
     WETH: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
@@ -191,9 +307,11 @@ module.exports = {
     ERC20_ABI,
     WETH_ABI,
     UNISWAP_V2_ROUTER_ABI,
+    UNISWAP_V2_PAIR_ABI,
     CURVE_POOL_ABI,
     LIDO_ABI,
     WSTETH_ABI,
     AAVE_POOL_ABI,
+    STRUCT_TEST_ABI,
     ADDRESSES
 };

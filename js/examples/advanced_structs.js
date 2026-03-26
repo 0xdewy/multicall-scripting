@@ -25,118 +25,15 @@ const { startAnvil, stopAnvil } = require("./anvilFork.js");
 const {
     ERC20_ABI,
     WETH_ABI,
+    STRUCT_TEST_ABI,
     ADDRESSES
 } = require("./abis.js");
 
-// Custom ABI for struct testing
-const STRUCT_TEST_ABI = [
-    {
-        type: "function",
-        name: "getComplexStruct",
-        inputs: [],
-        outputs: [
-            {
-                name: "s",
-                type: "tuple",
-                components: [
-                    { name: "a", type: "uint256" },
-                    { 
-                        name: "nested", 
-                        type: "tuple",
-                        components: [
-                            { name: "nA", type: "uint256" },
-                            { name: "nB", type: "uint256" }
-                        ]
-                    }
-                ]
-            }
-        ],
-        stateMutability: "view"
-    },
-    {
-        type: "function",
-        name: "setComplexStruct",
-        inputs: [
-            {
-                name: "s",
-                type: "tuple",
-                components: [
-                    { name: "a", type: "uint256" },
-                    { 
-                        name: "nested", 
-                        type: "tuple",
-                        components: [
-                            { name: "nA", type: "uint256" },
-                            { name: "nB", type: "uint256" }
-                        ]
-                    }
-                ]
-            }
-        ],
-        outputs: [],
-        stateMutability: "nonpayable"
-    },
-    {
-        type: "function",
-        name: "getConstantStruct",
-        inputs: [],
-        outputs: [
-            {
-                name: "s",
-                type: "tuple",
-                components: [
-                    { name: "a", type: "uint256" },
-                    { 
-                        name: "nested", 
-                        type: "tuple",
-                        components: [
-                            { name: "nA", type: "uint256" },
-                            { name: "nB", type: "uint256" }
-                        ]
-                    }
-                ]
-            }
-        ],
-        stateMutability: "pure"
-    },
-    {
-        type: "function",
-        name: "getTupleConstant",
-        inputs: [],
-        outputs: [
-            {
-                name: "",
-                type: "tuple",
-                components: [
-                    { name: "a", type: "uint256" },
-                    { name: "b", type: "uint256" },
-                    { name: "c", type: "uint256" }
-                ]
-            }
-        ],
-        stateMutability: "pure"
-    },
-    {
-        type: "function",
-        name: "setTuple",
-        inputs: [
-            { name: "a", type: "uint256" },
-            { name: "b", type: "uint256" },
-            { name: "c", type: "uint256" }
-        ],
-        outputs: [],
-        stateMutability: "nonpayable"
-    }
-];
-
-// Get MulticallScripter ABI
-function getMulticallScripterABI() {
-    const fs = require('fs');
-    const path = require('path');
-    const abiPath = path.join(__dirname, '../../out/MulticallScripter.sol/MulticallScripter.json');
-    const data = JSON.parse(fs.readFileSync(abiPath, 'utf8'));
-    return data.abi;
-}
+// Import helper functions
+const {
+    getMulticallScripterABI,
+    deployMulticallScripter
+} = require("./helpers.js");
 
 async function main() {
     console.log("🚀 Advanced Structs and Output Chaining Example");
@@ -194,20 +91,8 @@ async function main() {
         const structTestAddress = structReceipt.contractAddress;
         console.log(`   StructTest contract: ${structTestAddress}\n`);
         
-        // 4. Deploy MulticallScripter
-        console.log("4. Deploying MulticallScripter...");
-        const { execSync } = require('child_process');
-        const bytecode = execSync('forge inspect MulticallScripter bytecode', { cwd: process.cwd() }).toString().trim();
-        
-        const deployHash = await walletClient.deployContract({
-            abi: [{ type: "constructor", inputs: [], stateMutability: "nonpayable" }],
-            bytecode,
-            account,
-        });
-        
-        const deployReceipt = await publicClient.waitForTransactionReceipt({ hash: deployHash });
-        const multicallAddress = deployReceipt.contractAddress;
-        console.log(`   MulticallScripter: ${multicallAddress}\n`);
+        // 4. Deploy MulticallScripter using helper
+        const multicallAddress = await deployMulticallScripter(walletClient, publicClient, account);
         
         // Get MulticallScripter ABI
         const multicallScripterABI = getMulticallScripterABI();

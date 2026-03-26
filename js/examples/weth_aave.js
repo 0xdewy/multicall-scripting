@@ -29,14 +29,11 @@ const {
     ADDRESSES
 } = require("./abis.js");
 
-// Get MulticallScripter ABI (from build artifacts)
-function getMulticallScripterABI() {
-    const fs = require('fs');
-    const path = require('path');
-    const abiPath = path.join(__dirname, '../../out/MulticallScripter.sol/MulticallScripter.json');
-    const data = JSON.parse(fs.readFileSync(abiPath, 'utf8'));
-    return data.abi;
-}
+// Import helper functions
+const {
+    getMulticallScripterABI,
+    deployMulticallScripter
+} = require("./helpers.js");
 
 async function main() {
     console.log("🚀 WETH + Aave Borrowing Example (Fixed Amounts)");
@@ -78,20 +75,8 @@ async function main() {
         console.log(`   WETH: ${ADDRESSES.WETH}`);
         console.log(`   DAI: ${ADDRESSES.DAI}\n`);
         
-        // 1. Deploy MulticallScripter
-        console.log("3. Deploying MulticallScripter...");
-        const { execSync } = require('child_process');
-        const bytecode = execSync('forge inspect MulticallScripter bytecode', { cwd: process.cwd() }).toString().trim();
-        
-        const deployHash = await walletClient.deployContract({
-            abi: [{ type: "constructor", inputs: [], stateMutability: "nonpayable" }],
-            bytecode,
-            account,
-        });
-        
-        const deployReceipt = await publicClient.waitForTransactionReceipt({ hash: deployHash });
-        const multicallAddress = deployReceipt.contractAddress;
-        console.log(`   Contract: ${multicallAddress}\n`);
+        // 1. Deploy MulticallScripter using helper
+        const multicallAddress = await deployMulticallScripter(walletClient, publicClient, account);
         
         // Get MulticallScripter ABI
         const multicallScripterABI = getMulticallScripterABI();
