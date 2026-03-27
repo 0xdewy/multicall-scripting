@@ -251,4 +251,88 @@ contract JsLibrary is Test, CallBuilder, MulticallScripter {
         assertEq(storedAddresses[1], address(0xbeef));
         assertEq(storedAddresses[2], address(0xdead));
     }
+
+    function test_js_dynamic_array() public {
+        // Call the JavaScript file using FFI
+        string[] memory inputs = new string[](4);
+        inputs[0] = "bun";
+        inputs[1] = "js/test/dynamicArray.js";
+        inputs[2] = vm.toString(address(dynamicVar));
+        // Get the path to the ABI - it's in the out directory
+        inputs[3] = "out/Helpers.sol/DynamicVar.json";
+
+        // Execute the JavaScript file
+        bytes memory res = vm.ffi(inputs);
+
+        // Parse the JSON output
+        string memory json = string(res);
+
+        // Extract arrays from JSON
+        address[] memory jsTargetsArray = vm.parseJsonAddressArray(json, ".targets");
+        uint256[] memory jsOffsetsArray = vm.parseJsonUintArray(json, ".offsets");
+        bytes[] memory jsCalldatasArray = vm.parseJsonBytesArray(json, ".calldatas");
+        uint256[] memory jsMsgValuesArray = vm.parseJsonUintArray(json, ".msgValues");
+
+        // Verify we have 2 calls (setAddresses and getAddresses)
+        assertEq(jsTargetsArray.length, 2);
+        assertEq(jsOffsetsArray.length, 2);
+        assertEq(jsCalldatasArray.length, 2);
+        // msgValues should be empty since all calls have msgValue = 0
+        assertEq(jsMsgValuesArray.length, 0);
+
+        // Execute the transaction
+        multicall.execute(jsTargetsArray, jsOffsetsArray, jsCalldatasArray, jsMsgValuesArray);
+
+        // Verify the addresses were set correctly
+        // The JavaScript test should have:
+        // 1. Called setAddresses() with [0xcafe, 0xbeef, 0xdead]
+        // 2. Called getAddresses() to verify
+        address[] memory storedAddresses = dynamicVar.getAddresses();
+        assertEq(storedAddresses.length, 3);
+        assertEq(storedAddresses[0], address(0xcafe));
+        assertEq(storedAddresses[1], address(0xbeef));
+        assertEq(storedAddresses[2], address(0xdead));
+    }
+
+    function test_js_use_dynamic_var() public {
+        // Call the JavaScript file using FFI
+        string[] memory inputs = new string[](4);
+        inputs[0] = "bun";
+        inputs[1] = "js/test/useDynamicVar.js";
+        inputs[2] = vm.toString(address(dynamicVar));
+        // Get the path to the ABI - it's in the out directory
+        inputs[3] = "out/Helpers.sol/DynamicVar.json";
+
+        // Execute the JavaScript file
+        bytes memory res = vm.ffi(inputs);
+
+        // Parse the JSON output
+        string memory json = string(res);
+
+        // Extract arrays from JSON
+        address[] memory jsTargetsArray = vm.parseJsonAddressArray(json, ".targets");
+        uint256[] memory jsOffsetsArray = vm.parseJsonUintArray(json, ".offsets");
+        bytes[] memory jsCalldatasArray = vm.parseJsonBytesArray(json, ".calldatas");
+        uint256[] memory jsMsgValuesArray = vm.parseJsonUintArray(json, ".msgValues");
+
+        // Verify we have 2 calls (getConstantAddresses and setAddresses)
+        assertEq(jsTargetsArray.length, 2);
+        assertEq(jsOffsetsArray.length, 2);
+        assertEq(jsCalldatasArray.length, 2);
+        // msgValues should be empty since all calls have msgValue = 0
+        assertEq(jsMsgValuesArray.length, 0);
+
+        // Execute the transaction
+        multicall.execute(jsTargetsArray, jsOffsetsArray, jsCalldatasArray, jsMsgValuesArray);
+
+        // Verify the addresses were set correctly
+        // The JavaScript test should have:
+        // 1. Called getConstantAddresses() -> returns [0xCAFE, 0xBEEF, 0xDEAD]
+        // 2. Called setAddresses() with the returned array
+        address[] memory storedAddresses = dynamicVar.getAddresses();
+        assertEq(storedAddresses.length, 3);
+        assertEq(storedAddresses[0], address(0xcafe));
+        assertEq(storedAddresses[1], address(0xbeef));
+        assertEq(storedAddresses[2], address(0xdead));
+    }
 }
