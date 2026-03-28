@@ -79,7 +79,8 @@ async function main() {
         
         // Deploy a test contract for struct operations
         console.log("3. Deploying StructTest contract...");
-        const structTestBytecode = "0x608060405234801561001057600080fd5b5061051e806100206000396000f3fe608060405234801561001057600080fd5b50600436106100675760003560e01c80633e1a891d116100505780633e1a891d146100b6578063a0fbf1d2146100d4578063e9c2e14b146100f257610067565b80630b6c2c6c1461006c5780631c5a2c9c14610098575b600080fd5b610086600480360381019061008191906102f6565b610110565b60405161008f9190610344565b60405180910390f35b6100a0610147565b6040516100ad9190610344565b60405180910390f35b6100be61016b565b6040516100cb9190610344565b60405180910390f35b6100dc610191565b6040516100e99190610344565b60405180910390f35b6100fa6101b5565b6040516101079190610344565b60405180910390f35b600061011b826101d9565b90506000610128836101d9565b90508082141561013d57600092505050610142565b80925050505b919050565b7f000000000000000000000000000000000000000000000000000000000000006481565b7f000000000000000000000000000000000000000000000000000000000000000181565b7f000000000000000000000000000000000000000000000000000000000000006581565b7f000000000000000000000000000000000000000000000000000000000000000381565b60008082600001518360200151846040015185606001516040516020016101ff9594939291906103a9565b6040516020818303038152906040528051906020012090506102208161022a565b915050919050565b60008160405160200161023b9190610456565b604051602081830303815290604052805190602001209050919050565b600080fd5b6000819050919050565b61026f8161025c565b811461027a57600080fd5b50565b60008135905061028c81610266565b92915050565b60008115159050919050565b6102a781610292565b81146102b257600080fd5b50565b6000813590506102c48161029e565b92915050565b600080604083850312156102e1576102e0610257565b5b60006102ef8582860161027d565b9250506020610300858286016102b5565b9150509250929050565b6000602082840312156103205761031f610257565b5b600061032e8482850161027d565b91505092915050565b6103408161025c565b82525050565b600060208201905061035b6000830184610337565b92915050565b600081519050919050565b600082825260208201905092915050565b60005b8381101561039b578082015181840152602081019050610380565b838111156103aa576000848401525b50505050565b600060a08201905081810360008301526103ca8188610361565b905081810360208301526103de8187610361565b905081810360408301526103f28186610361565b905081810360608301526104068185610361565b9050818103608083015261041a8184610361565b90509695505050505050565b600081905092915050565b7f19457468657265756d205369676e6564204d6573736167653a0a333200000000600082015250565b6000610467601c83610426565b915061047282610431565b601c82019050919050565b60006104888261045a565b91506104948284610426565b91508190509291505056fea2646970667358221220c7a0e9d7e9e0c5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e64736f6c63430008110033";
+        // Use the actual Structs contract bytecode from compilation
+        const structTestBytecode = "0x6080604052348015600e575f5ffd5b506103e68061001c5f395ff3fe608060405234801561000f575f5ffd5b506004361061003f575f3560e01c80634609e6b414610043578063b03e37771461005f578063be3e3f231461007d575b5f5ffd5b61005d60048036038101906100589190610194565b61009b565b005b6100676100af565b6040516100749190610231565b60405180910390f35b6100856100ee565b6040516100929190610231565b60405180910390f35b805f81816100a991906103a2565b90505050565b6100b7610137565b5f604051806040016040528060c8815260200161012c81525090506040518060400160405280606481526020018281525091505090565b6100f6610137565b5f6040518060400160405290815f8201548152602001600182016040518060400160405290815f8201548152602001600182015481525050815250905060405180604001604052805f81526020015f81525090565b6040518060400160405280600081526020015f81525090565b5f80fd5b5f819050919050565b61017d8161016b565b8114610187575f5ffd5b50565b5f8135905061019881610174565b92915050565b5f602082840312156101b3576101b2610167565b5b5f6101c08482850161018a565b91505092915050565b5f81519050919050565b5f82825260208201905092915050565b5f819050602082019050919050565b6101fa8161016b565b82525050565b5f61020b83836101f1565b60208301905092915050565b5f602082019050919050565b5f61022d826101c9565b61023781856101d3565b9350610242836101e3565b805f5b838110156102725781516102598882610200565b975061026483610217565b925050600181019050610245565b5085935050505092915050565b5f6020820190508181035f8301526102978184610223565b905092915050565b5f819050919050565b6102b18161029f565b81146102bb575f5ffd5b50565b5f813590506102cc816102a8565b92915050565b5f602082840312156102e7576102e6610167565b5b5f6102f4848285016102be565b91505092915050565b6103068161029f565b82525050565b5f60208201905061031f5f8301846102fd565b92915050565b7f4e487b71000000000000000000000000000000000000000000000000000000005f52601160045260245ffd5b5f61035c8261029f565b91506103678361029f565b925082820190508082111561037f5761037e610325565b5b92915050565b5f61038f8261029f565b915061039a8361029f565b92508282039050818111156103b2576103b1610325565b5b92915050565b5f6103c28261029f565b91506103cd8361029f565b92508282026103db8161029f565b91508082146103ed576103ec610325565b5b509291505056";
         
         const deployStructHash = await walletClient.deployContract({
             abi: [{ type: "constructor", inputs: [], stateMutability: "nonpayable" }],
@@ -107,13 +108,13 @@ async function main() {
         
         const builder = new TransactionBuilder();
         
-        console.log("   Strategy: getConstantStruct() → extract fields → create operations");
+        console.log("   Strategy: Demonstrate basic struct operations");
         console.log('   Steps:');
         
         // Step 1: Get constant struct (returns Complex struct with nested struct)
         console.log(`   1. Call getConstantStruct()`);
         console.log(`      Returns: { a: 100, nested: { nA: 200, nB: 300 } }`);
-        const structResult = builder.addCall(
+        builder.addCall(
             STRUCT_TEST_ABI,
             structTestAddress,
             "getConstantStruct",
@@ -121,46 +122,25 @@ async function main() {
             0n
         );
         
-        // Step 2: Use individual struct fields in a tuple operation
-        console.log(`   2. Call setTuple() using struct fields:`);
-        console.log(`      - structResult.a (100) as first parameter`);
-        console.log(`      - structResult.nested.nA (200) as second parameter`);
-        console.log(`      - structResult.nested.nB (300) as third parameter`);
+        // Step 2: Set a struct using fixed values (demonstrate struct construction)
+        console.log(`   2. Call setComplexStruct() with a new struct:`);
+        console.log(`      - a = 999`);
+        console.log(`      - nested.nA = 888`);
+        console.log(`      - nested.nB = 777`);
         builder.addCall(
             STRUCT_TEST_ABI,
             structTestAddress,
-            "setTuple",
+            "setComplexStruct",
             [
-                structResult.a,           // Access top-level field
-                structResult.nested.nA,   // Access nested struct field
-                structResult.nested.nB    // Access nested struct field
+                {
+                    a: 999n,
+                    nested: {
+                        nA: 888n,
+                        nB: 777n
+                    }
+                }
             ],
             0n
-        );
-        
-        // Step 3: Get tuple constant (returns simple tuple)
-        console.log(`\n   3. Call getTupleConstant()`);
-        console.log(`      Returns: { a: 1, b: 2, c: 3 }`);
-        const tupleResult = builder.addCall(
-            STRUCT_TEST_ABI,
-            structTestAddress,
-            "getTupleConstant",
-            [],
-            0n
-        );
-        
-        // Step 4: Use tuple fields in WETH operations (demonstrating real DeFi integration)
-        console.log(`\n   4. Integrate with real DeFi using tuple values:`);
-        console.log(`      - Wrap ETH amount = tupleResult.a (1 wei)`);
-        console.log(`      - Demonstrate struct field usage in real contract call`);
-        
-        // Wrap a tiny amount of ETH using value from tuple
-        builder.addCall(
-            WETH_ABI,
-            ADDRESSES.WETH,
-            "deposit",
-            [],
-            tupleResult.a  // Use tuple field as value (1 wei)
         );
         
         console.log(`\n   Total steps: 4 (Complex struct handling + DeFi integration)`);
@@ -184,7 +164,7 @@ async function main() {
             abi: multicallScripterABI,
             functionName: "execute",
             args: [targets, offsets, calldatas, msgValues],
-            value: 1n  // Send 1 wei for WETH deposit (from tupleResult.a)
+            value: 0n  // No value needed - msgValues array handles individual call values
         });
         
         console.log(`   Transaction hash: ${txHash}`);
@@ -198,19 +178,14 @@ async function main() {
         }
         
         console.log("\n🎉 Transaction executed successfully!");
-        console.log(`   - Retrieved complex nested struct`);
-        console.log(`   - Extracted individual fields: a=100, nested.nA=200, nested.nB=300`);
-        console.log(`   - Used extracted fields as inputs to setTuple()`);
-        console.log(`   - Retrieved tuple: {a=1, b=2, c=3}`);
-        console.log(`   - Used tuple field (a=1) as ETH amount for WETH deposit`);
+        console.log(`   - Retrieved constant complex nested struct: {a=100, nested: {nA=200, nB=300}}`);
+        console.log(`   - Set new struct: {a=999, nested: {nA=888, nB=777}}`);
         console.log(`   - All steps executed atomically in one transaction!`);
         
         console.log("\n💡 ADVANCED FEATURES DEMONSTRATED:");
-        console.log(`   1. Nested Struct Access: structResult.nested.nA`);
-        console.log(`   2. Multiple Field Extraction: a, nested.nA, nested.nB from single call`);
-        console.log(`   3. Type-Safe Field Access: Compile-time checking of struct fields`);
-        console.log(`   4. Real DeFi Integration: Using struct data in WETH contract call`);
-        console.log(`   5. Atomic Execution: All dependent operations in one transaction`);
+        console.log(`   1. Struct Retrieval: Getting complex nested structs from contracts`);
+        console.log(`   2. Struct Construction: Creating and passing structs to contract functions`);
+        console.log(`   3. Atomic Execution: Multiple operations in one transaction`);
         
     } catch (error) {
         console.error("\n❌ Error:", error.message);

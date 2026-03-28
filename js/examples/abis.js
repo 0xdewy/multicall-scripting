@@ -182,10 +182,36 @@ const UNISWAP_V2_PAIR_ABI = [
             { name: "blockTimestampLast", type: "uint32" }
         ],
         stateMutability: "view"
+    },
+    {
+        type: "function",
+        name: "token0",
+        inputs: [],
+        outputs: [{ name: "", type: "address" }],
+        stateMutability: "view"
+    },
+    {
+        type: "function",
+        name: "token1",
+        inputs: [],
+        outputs: [{ name: "", type: "address" }],
+        stateMutability: "view"
+    },
+    {
+        type: "function",
+        name: "swap",
+        inputs: [
+            { name: "amount0Out", type: "uint256" },
+            { name: "amount1Out", type: "uint256" },
+            { name: "to", type: "address" },
+            { name: "data", type: "bytes" }
+        ],
+        outputs: [],
+        stateMutability: "nonpayable"
     }
 ];
 
-// Struct Test ABI for advanced struct handling
+// Struct Test ABI for advanced struct handling (from Structs contract in Helpers.sol)
 const STRUCT_TEST_ABI = [
     {
         type: "function",
@@ -212,29 +238,6 @@ const STRUCT_TEST_ABI = [
     },
     {
         type: "function",
-        name: "setComplexStruct",
-        inputs: [
-            {
-                name: "s",
-                type: "tuple",
-                components: [
-                    { name: "a", type: "uint256" },
-                    { 
-                        name: "nested", 
-                        type: "tuple",
-                        components: [
-                            { name: "nA", type: "uint256" },
-                            { name: "nB", type: "uint256" }
-                        ]
-                    }
-                ]
-            }
-        ],
-        outputs: [],
-        stateMutability: "nonpayable"
-    },
-    {
-        type: "function",
         name: "getConstantStruct",
         inputs: [],
         outputs: [
@@ -258,28 +261,23 @@ const STRUCT_TEST_ABI = [
     },
     {
         type: "function",
-        name: "getTupleConstant",
-        inputs: [],
-        outputs: [
+        name: "setComplexStruct",
+        inputs: [
             {
-                name: "",
+                name: "s",
                 type: "tuple",
                 components: [
                     { name: "a", type: "uint256" },
-                    { name: "b", type: "uint256" },
-                    { name: "c", type: "uint256" }
+                    { 
+                        name: "nested", 
+                        type: "tuple",
+                        components: [
+                            { name: "nA", type: "uint256" },
+                            { name: "nB", type: "uint256" }
+                        ]
+                    }
                 ]
             }
-        ],
-        stateMutability: "pure"
-    },
-    {
-        type: "function",
-        name: "setTuple",
-        inputs: [
-            { name: "a", type: "uint256" },
-            { name: "b", type: "uint256" },
-            { name: "c", type: "uint256" }
         ],
         outputs: [],
         stateMutability: "nonpayable"
