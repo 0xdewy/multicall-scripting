@@ -19,6 +19,30 @@ export class TransactionBuilder {
         this.usedDescriptors = new Set();
     }
 
+    #setupDynamicDescriptor(descriptor, n, builderRef) {
+        if (n <= 0) throw new Error(`${descriptor.type} length must be positive`);
+        descriptor.length = n;
+        descriptor.requiresLength = false;
+        
+        if (descriptor.type.includes("[]")) {
+            const elementType = descriptor.type.replace("[]", "");
+            // Don't support string/bytes arrays
+            if (elementType === "string" || elementType === "bytes") {
+                throw new Error(`String/bytes arrays are not supported: ${descriptor.type}`);
+            }
+            descriptor.size = 32 + n * 32;
+            descriptor.value = new Array(n).fill(builderRef.#getDefaultValue(elementType, "", ""));
+        } else if (descriptor.type === "bytes") {
+            descriptor.size = 32 + Math.ceil(n / 32) * 32;
+            descriptor.value = "0x" + "00".repeat(n);
+        } else if (descriptor.type === "string") {
+            descriptor.size = 32 + Math.ceil(n / 32) * 32;
+            descriptor.value = " ".repeat(n);
+        }
+        descriptor.dataOffset = 32;
+        return descriptor;
+    }
+
     #getDefaultValue(type, functionName, componentName) {
         if (type.includes("[]")) return [];
         if (type.startsWith("bytes")) return "";
@@ -40,7 +64,18 @@ export class TransactionBuilder {
     }
 
     #isDynamicType(type) {
-        return type.includes("[]") || type === "bytes" || type === "string";
+        // Regular strings/bytes are dynamic and supported
+        if (type === "bytes" || type === "string") return true;
+        // Arrays are dynamic, but string/bytes arrays are not supported
+        if (type.includes("[]")) {
+            const elementType = type.replace("[]", "");
+            // Don't support string/bytes arrays
+            if (elementType === "string" || elementType === "bytes") {
+                return false;
+            }
+            return true;
+        }
+        return false;
     }
 
     #getElementType(arrayType) {
@@ -64,10 +99,40 @@ export class TransactionBuilder {
                     };
                 }
                 
-                // Handle numeric index access - return the value, not a descriptor
+                // Handle numeric index access - return element descriptor
                 const index = Number(prop);
                 if (!isNaN(index) && index >= 0 && index < target.length) {
-                    return target.value[index] || builder.#getDefaultValue(target.elementType, "", "");
+                    // Calculate element offset: data starts at dataOffset + 32 (skip length), each element is 32 bytes
+                    const elementOffset = target.dataOffset + 32 + (index * 32);
+                    
+                    // Check if element type is itself dynamic
+                    const isElementDynamic = builder.#isDynamicType(target.elementType);
+                    
+                    // Create element descriptor
+                    const elementDesc = {
+                        callIndex: target.callIndex,
+                        type: target.elementType,
+                        value: target.value[index] || builder.#getDefaultValue(target.elementType, "", ""),
+                        offset: elementOffset,
+                        size: 32, // Each element occupies 32 bytes
+                        isDynamic: isElementDynamic,
+                        requiresLength: isElementDynamic,
+                        parentArray: target, // Reference to parent for context
+                        arrayIndex: index,
+                        name: `[${index}]` // For debugging/identification
+                    };
+                    
+                    // If element is dynamic, add with_length method
+                    if (isElementDynamic) {
+                        elementDesc.with_length = function(n) {
+                            // Handle dynamic element allocation
+                            if (n <= 0) throw new Error(`${this.type} length must be positive`);
+                            builder.#setupDynamicDescriptor(this, n, builder);
+                            return this;
+                        };
+                    }
+                    
+                    return elementDesc;
                 }
                 
                 // Default to property access
@@ -94,18 +159,18 @@ export class TransactionBuilder {
             throw new Error(`Argument count mismatch: ${args.length} vs ${functionAbi.inputs.length}`);
         }
 
-        functionAbi.inputs.forEach((abiInput, i) => {
-            if (abiInput.type.startsWith("bytes")) {
-                const value = args[i] && typeof args[i] === "object" && args[i].callIndex !== undefined
-                    ? args[i].value
-                    : args[i];
-                if (typeof value !== "string" || !value.startsWith("0x")) {
-                    throw new Error(`Bytes arguments must be hex strings: ${args[i]}`);
-                }
-            }
-        });
+        // Bytes validation moved to processArg
 
         const processArg = (arg, abiInput) => {
+            // Handle array element descriptors
+            if (arg && typeof arg === "object" && arg.arrayIndex !== undefined) {
+                // This is an array element descriptor
+                if (arg.isDynamic === true && arg.requiresLength) {
+                    throw new Error(`${arg.type} element at index ${arg.arrayIndex} requires with_length() before use`);
+                }
+                return arg.value;
+            }
+            
             // Handle dynamic descriptors (array/bytes/string)
             if (arg && typeof arg === "object" && arg.isDynamic === true) {
                 if (arg.requiresLength) {
@@ -131,6 +196,19 @@ export class TransactionBuilder {
                 }
                 return result;
             }
+            
+            // Handle regular arrays (not descriptors)
+            if (Array.isArray(arg) && abiInput.type.includes("[]")) {
+                // Convert array elements based on their type
+                const elementType = abiInput.type.replace("[]", "");
+                return arg.map(item => {
+                    if (elementType.includes("int")) {
+                        return BigInt(item);
+                    }
+                    return item;
+                });
+            }
+            
             return arg;
         };
 
@@ -139,23 +217,54 @@ export class TransactionBuilder {
             let arg = args[i];
             let value = processArg(arg, abiInput);
 
-            if (abiInput.type.includes("int")) {
+            // Only convert to BigInt for integer types that are not arrays
+            if (abiInput.type.includes("int") && !abiInput.type.includes("[]")) {
                 return BigInt(value);
             }
+            
+            // Validate bytes arguments (non-array, non-descriptor)
+            if (abiInput.type.startsWith("bytes") && !abiInput.type.includes("[]")) {
+                // Skip validation for descriptors (they have callIndex)
+                if (!(arg && typeof arg === "object" && arg.callIndex !== undefined)) {
+                    if (typeof value !== "string" || !value.startsWith("0x")) {
+                        throw new Error(`Bytes arguments must be hex strings: ${value}`);
+                    }
+                }
+            }
+            
             return value;
         });
 
         const findOutputDescriptors = (arg, path = []) => {
             const descriptors = [];
             if (arg && typeof arg === "object") {
-                // Handle output descriptors (including dynamic ones)
+                // Handle output descriptors (including dynamic ones and array elements)
                 if (arg.callIndex !== undefined) {
                     descriptors.push({ descriptor: arg, path });
+                    // Don't traverse into descriptor objects
+                    return descriptors;
                 }
-                // Also check nested properties
-                for (const key in arg) {
-                    if (key === "length" || key === "with_length") continue;
-                    descriptors.push(...findOutputDescriptors(arg[key], [...path, key]));
+                
+                // Check if it's an array or array-like (has length property)
+                if (arg.length !== undefined && typeof arg.length === "number") {
+                    // Iterate through array indices
+                    for (let i = 0; i < arg.length; i++) {
+                        if (arg[i] !== undefined) {
+                            descriptors.push(...findOutputDescriptors(arg[i], [...path, i.toString()]));
+                        }
+                    }
+                } else {
+                    // Check object properties (excluding special ones)
+                    for (const key in arg) {
+                        if (key === "length" || key === "with_length" || key === "value" || 
+                            key === "type" || key === "offset" || key === "size" || 
+                            key === "callIndex" || key === "isDynamic" || key === "requiresLength" ||
+                            key === "requiresSizing" || key === "name" || key === "elementType" ||
+                            key === "dataOffset" || key === "parentArray" || key === "arrayIndex") {
+                            continue;
+                        }
+                        descriptors.push(...findOutputDescriptors(arg[key], [...path, key]));
+                    }
                 }
             }
             return descriptors;
@@ -167,7 +276,12 @@ export class TransactionBuilder {
                 if (prevCall?.functionName === "getConstantStruct") continue;
 
                 // Create a unique identifier for this descriptor
-                const descriptorId = `${descriptor.callIndex}:${descriptor.offset}:${descriptor.size}`;
+                let descriptorId;
+                if (descriptor.arrayIndex !== undefined) {
+                    descriptorId = `${descriptor.callIndex}:${descriptor.offset}:${descriptor.size}:${descriptor.arrayIndex}`;
+                } else {
+                    descriptorId = `${descriptor.callIndex}:${descriptor.offset}:${descriptor.size}`;
+                }
                 
                 // Check if this descriptor has already been used
                 if (this.usedDescriptors.has(descriptorId)) {
@@ -191,18 +305,58 @@ export class TransactionBuilder {
                 // Calculate prevCall's end position
                 const prevCallEnd = prevCall.freeMemory + prevCall.fnCalldata.length / 2;
                 
-                // For dynamic types, we need to place the data after the offset pointer
-                // For a dynamic array parameter: [offset][array data]
-                // array data starts at paramOffset + 32
-                const dataPosition = descriptor.isDynamic ? paramOffset + 32 : paramOffset;
+                // Calculate data position based on descriptor type
+                let dataPosition;
+                if (descriptor.arrayIndex !== undefined) {
+                    // Array element descriptor - check if parameter is array type
+                    const paramType = functionAbi.inputs[index].type;
+                    if (paramType.includes("[]")) {
+                        // Parameter is array type - element goes inside array
+                        // For dynamic array: [offset][length][element0][element1]...
+                        // Element i is at paramOffset + 64 + i*32
+                        dataPosition = paramOffset + 64 + descriptor.arrayIndex * 32;
+                    } else {
+                        // Parameter is scalar type - element goes directly at paramOffset
+                        dataPosition = paramOffset;
+                    }
+                } else if (descriptor.isDynamic) {
+                    // Dynamic descriptor (full array/bytes/string) - data starts after offset
+                    // For strings/bytes: skip offset (32) and length (32) = 64
+                    // For arrays: data starts at offset + 32 (after length)
+                    if (descriptor.type === "string" || descriptor.type === "bytes") {
+                        dataPosition = paramOffset + 64;
+                    } else {
+                        dataPosition = paramOffset + 32;
+                    }
+                } else {
+                    // Regular descriptor
+                    dataPosition = paramOffset;
+                }
                 
                 // memTarget is the offset from prevCall's end to current data position
                 const memTarget = (currentMemPos + dataPosition) - prevCallEnd;
 
-                // For dynamic descriptors (arrays, bytes, strings), use dataOffset instead of offset
-                // and the full size including all elements
-                const returnOffset = descriptor.isDynamic ? (descriptor.dataOffset || 32) : descriptor.offset;
-                const resultLength = descriptor.isDynamic ? descriptor.size : descriptor.size;
+                // Calculate return offset and result length based on descriptor type
+                let returnOffset, resultLength;
+                if (descriptor.arrayIndex !== undefined) {
+                    // Array element descriptor
+                    returnOffset = descriptor.offset;
+                    resultLength = descriptor.size;
+                } else if (descriptor.isDynamic) {
+                    // Dynamic descriptor (array, bytes, string)
+                    // For strings/bytes: copy length field (32) + data
+                    // For arrays: data starts at dataOffset (32)
+                    if (descriptor.type === "string" || descriptor.type === "bytes") {
+                        returnOffset = descriptor.offset + 32;
+                    } else {
+                        returnOffset = descriptor.offset + (descriptor.dataOffset || 32);
+                    }
+                    resultLength = descriptor.size;
+                } else {
+                    // Regular descriptor
+                    returnOffset = descriptor.offset;
+                    resultLength = descriptor.size;
+                }
 
                 prevCall.memTargets.push(memTarget);
                 prevCall.resultLengths.push(resultLength);
@@ -255,40 +409,21 @@ export class TransactionBuilder {
                 // Add with_length method
                 const builder = this; // Capture 'this' reference
                 dynamicDesc.with_length = function(n) {
-                    if (n <= 0) throw new Error(`${this.type} length must be positive`);
-                    this.length = n;
-                    this.requiresLength = false;
-                    
-                    // Update value based on type
-                    if (this.type.includes("[]")) {
-                        // Array: create array of default values
-                        const elementType = this.type.replace("[]", "");
-                        this.value = new Array(n).fill(builder.#getDefaultValue(elementType, "", ""));
-                        // For dynamic arrays, update size to include all elements
-                        // Array data size = 32 (length) + n * 32 (elements)
-                        this.size = 32 + n * 32;
-                        // For single dynamic returns, data starts at offset 32 (0x20)
-                        this.dataOffset = 32;
-                    } else if (this.type === "bytes") {
-                        // bytes: hex string of zero bytes
-                        this.value = "0x" + "00".repeat(n);
-                        this.size = 32 + Math.ceil(n / 32) * 32; // bytes: length + actual bytes (rounded up)
-                        this.dataOffset = 32;
-                    } else if (this.type === "string") {
-                        // string: empty string (no pre-allocation needed)
-                        this.value = "";
-                        this.size = 32 + Math.ceil(n / 32) * 32; // string: length + encoded string
-                        this.dataOffset = 32;
-                    }
-                    
-                    return this; // Chainable
+                    builder.#setupDynamicDescriptor(this, n, builder);
+                    return this;
                 };
                     
                     // For arrays, create a proxy for element access
                     if (component.type.includes("[]")) {
-                        dynamicDesc.elementType = this.#getElementType(component.type);
-                        const arrayProxy = this.#createArrayProxy(dynamicDesc);
-                        outputs.push(arrayProxy);
+                        const elementType = this.#getElementType(component.type);
+                        // Skip creating array proxy for string/bytes arrays
+                        if (elementType === "string" || elementType === "bytes") {
+                            outputs.push(dynamicDesc);
+                        } else {
+                            dynamicDesc.elementType = elementType;
+                            const arrayProxy = this.#createArrayProxy(dynamicDesc);
+                            outputs.push(arrayProxy);
+                        }
                     } else {
                         outputs.push(dynamicDesc);
                     }
@@ -337,40 +472,21 @@ export class TransactionBuilder {
                 // Add with_length method
                 const builder = this; // Capture 'this' reference
                 dynamicDesc.with_length = function(n) {
-                    if (n <= 0) throw new Error(`${this.type} length must be positive`);
-                    this.length = n;
-                    this.requiresLength = false;
-                    
-                    // Update value based on type
-                    if (this.type.includes("[]")) {
-                        // Array: create array of default values
-                        const elementType = this.type.replace("[]", "");
-                        this.value = new Array(n).fill(builder.#getDefaultValue(elementType, "", ""));
-                        // For dynamic arrays, update size to include all elements
-                        // Array data size = 32 (length) + n * 32 (elements)
-                        this.size = 32 + n * 32;
-                        // For single dynamic returns, data starts at offset 32 (0x20)
-                        this.dataOffset = 32;
-                    } else if (this.type === "bytes") {
-                        // bytes: hex string of zero bytes
-                        this.value = "0x" + "00".repeat(n);
-                        this.size = 32 + n; // bytes: length + actual bytes (rounded up to 32-byte multiples)
-                        this.dataOffset = 32;
-                    } else if (this.type === "string") {
-                        // string: empty string (no pre-allocation needed)
-                        this.value = "";
-                        this.size = 32 + Math.ceil(n / 32) * 32; // string: length + encoded string
-                        this.dataOffset = 32;
-                    }
-                    
-                    return this; // Chainable
+                    builder.#setupDynamicDescriptor(this, n, builder);
+                    return this;
                 };
                 
                 // For arrays, create a proxy for element access
                 if (output.type.includes("[]")) {
-                    dynamicDesc.elementType = this.#getElementType(output.type);
-                    const arrayProxy = this.#createArrayProxy(dynamicDesc);
-                    allOutputs.push(arrayProxy);
+                    const elementType = this.#getElementType(output.type);
+                    // Skip creating array proxy for string/bytes arrays
+                    if (elementType === "string" || elementType === "bytes") {
+                        allOutputs.push(dynamicDesc);
+                    } else {
+                        dynamicDesc.elementType = elementType;
+                        const arrayProxy = this.#createArrayProxy(dynamicDesc);
+                        allOutputs.push(arrayProxy);
+                    }
                 } else {
                     allOutputs.push(dynamicDesc);
                 }

@@ -5,7 +5,7 @@ import {Test, console} from "forge-std/Test.sol";
 import "forge-std/StdJson.sol";
 import {CallBuilder, CallDecoder} from "src/CallBuilder.sol";
 import {MulticallScripter} from "src/MulticallScripter.sol";
-import {Math, SimpleReturn, DynamicReturn, Fuzzy, Structs, DynamicVar} from "./Helpers.sol";
+import {Math, SimpleReturn, DynamicReturn, Fuzzy, Structs, DynamicVar, ArrayElementAccess, StringAndBytesOperations} from "./Helpers.sol";
 
 contract JsLibrary is Test, CallBuilder, MulticallScripter {
     MulticallScripter multicall;
@@ -17,6 +17,8 @@ contract JsLibrary is Test, CallBuilder, MulticallScripter {
     Fuzzy fuzzy;
     Structs structs;
     DynamicVar dynamicVar;
+    ArrayElementAccess arrayElementAccess;
+    StringAndBytesOperations stringAndBytesOps;
 
     address[] targets;
     uint256[] offsets;
@@ -37,6 +39,8 @@ contract JsLibrary is Test, CallBuilder, MulticallScripter {
         fuzzy = new Fuzzy();
         structs = new Structs();
         dynamicVar = new DynamicVar();
+        arrayElementAccess = new ArrayElementAccess();
+        stringAndBytesOps = new StringAndBytesOperations();
     }
 
     function test_js_complex_structs() public {
@@ -334,5 +338,126 @@ contract JsLibrary is Test, CallBuilder, MulticallScripter {
         assertEq(storedAddresses[0], address(0xcafe));
         assertEq(storedAddresses[1], address(0xbeef));
         assertEq(storedAddresses[2], address(0xdead));
+    }
+
+    function test_js_array_element_access_numbers() public {
+        // Call the JavaScript file using FFI
+        string[] memory inputs = new string[](4);
+        inputs[0] = "bun";
+        inputs[1] = "js/test/arrayElementAccess.js";
+        inputs[2] = vm.toString(address(arrayElementAccess));
+        inputs[3] = "out/Helpers.sol/ArrayElementAccess.json";
+
+        bytes memory res = vm.ffi(inputs);
+        string memory json = string(res);
+
+        // Parse the JSON output
+        address[] memory jsTargetsArray = vm.parseJsonAddressArray(json, ".targets");
+        uint256[] memory jsOffsetsArray = vm.parseJsonUintArray(json, ".offsets");
+        bytes[] memory jsCalldatasArray = vm.parseJsonBytesArray(json, ".calldatas");
+        uint256[] memory jsMsgValuesArray = vm.parseJsonUintArray(json, ".msgValues");
+
+        // Execute the transaction
+        multicall.execute(jsTargetsArray, jsOffsetsArray, jsCalldatasArray, jsMsgValuesArray);
+
+        // The JavaScript test should have:
+        // 1. Called getConstantNumbers() -> returns [100, 200, 300]
+        // 2. Used numbers[0] (100) and numbers[1] (200) in sumTwoNumbers(100, 200)
+        // 3. Called getConstantAddresses() -> returns [0x111..., 0x222..., 0x333...]
+        // 4. Used addresses[0] and addresses[1] in combineAddresses()
+        // We can verify by checking the return value would be 300 for sumTwoNumbers
+        // Note: We don't have a way to capture return values in multicall, but the transaction should succeed
+    }
+
+    function test_js_string_operations() public {
+        // Call the JavaScript file using FFI
+        string[] memory inputs = new string[](4);
+        inputs[0] = "bun";
+        inputs[1] = "js/test/stringOperations.js";
+        inputs[2] = vm.toString(address(stringAndBytesOps));
+        inputs[3] = "out/Helpers.sol/StringAndBytesOperations.json";
+
+        bytes memory res = vm.ffi(inputs);
+        string memory json = string(res);
+
+        // Parse the JSON output
+        address[] memory jsTargetsArray = vm.parseJsonAddressArray(json, ".targets");
+        uint256[] memory jsOffsetsArray = vm.parseJsonUintArray(json, ".offsets");
+        bytes[] memory jsCalldatasArray = vm.parseJsonBytesArray(json, ".calldatas");
+        uint256[] memory jsMsgValuesArray = vm.parseJsonUintArray(json, ".msgValues");
+
+        // Execute the transaction
+        multicall.execute(jsTargetsArray, jsOffsetsArray, jsCalldatasArray, jsMsgValuesArray);
+
+        // The JavaScript test should demonstrate string operations work
+    }
+
+    function test_js_bytes_operations() public {
+        // Call the JavaScript file using FFI
+        string[] memory inputs = new string[](4);
+        inputs[0] = "bun";
+        inputs[1] = "js/test/bytesOperations.js";
+        inputs[2] = vm.toString(address(stringAndBytesOps));
+        inputs[3] = "out/Helpers.sol/StringAndBytesOperations.json";
+
+        bytes memory res = vm.ffi(inputs);
+        string memory json = string(res);
+
+        // Parse the JSON output
+        address[] memory jsTargetsArray = vm.parseJsonAddressArray(json, ".targets");
+        uint256[] memory jsOffsetsArray = vm.parseJsonUintArray(json, ".offsets");
+        bytes[] memory jsCalldatasArray = vm.parseJsonBytesArray(json, ".calldatas");
+        uint256[] memory jsMsgValuesArray = vm.parseJsonUintArray(json, ".msgValues");
+
+        // Execute the transaction
+        multicall.execute(jsTargetsArray, jsOffsetsArray, jsCalldatasArray, jsMsgValuesArray);
+
+        // The JavaScript test should demonstrate bytes operations work
+    }
+
+    function test_js_string_simple_operations() public {
+        // Call the JavaScript file using FFI
+        string[] memory inputs = new string[](4);
+        inputs[0] = "bun";
+        inputs[1] = "js/test/stringArrayAccess.js";
+        inputs[2] = vm.toString(address(stringAndBytesOps));
+        inputs[3] = "out/Helpers.sol/StringAndBytesOperations.json";
+
+        bytes memory res = vm.ffi(inputs);
+        string memory json = string(res);
+
+        // Parse the JSON output
+        address[] memory jsTargetsArray = vm.parseJsonAddressArray(json, ".targets");
+        uint256[] memory jsOffsetsArray = vm.parseJsonUintArray(json, ".offsets");
+        bytes[] memory jsCalldatasArray = vm.parseJsonBytesArray(json, ".calldatas");
+        uint256[] memory jsMsgValuesArray = vm.parseJsonUintArray(json, ".msgValues");
+
+        // Execute the transaction
+        multicall.execute(jsTargetsArray, jsOffsetsArray, jsCalldatasArray, jsMsgValuesArray);
+
+        // The JavaScript test should demonstrate simple string operations
+    }
+
+    function test_js_bytes_simple_operations() public {
+        // Call the JavaScript file using FFI
+        string[] memory inputs = new string[](4);
+        inputs[0] = "bun";
+        inputs[1] = "js/test/bytesArrayAccess.js";
+        inputs[2] = vm.toString(address(stringAndBytesOps));
+        inputs[3] = "out/Helpers.sol/StringAndBytesOperations.json";
+
+        bytes memory res = vm.ffi(inputs);
+        string memory json = string(res);
+
+        // Parse the JSON output
+        address[] memory jsTargetsArray = vm.parseJsonAddressArray(json, ".targets");
+        uint256[] memory jsOffsetsArray = vm.parseJsonUintArray(json, ".offsets");
+        bytes[] memory jsCalldatasArray = vm.parseJsonBytesArray(json, ".calldatas");
+        uint256[] memory jsMsgValuesArray = vm.parseJsonUintArray(json, ".msgValues");
+
+        // Execute the transaction
+        multicall.execute(jsTargetsArray, jsOffsetsArray, jsCalldatasArray, jsMsgValuesArray);
+
+        // The JavaScript test should demonstrate simple bytes operations
     }
 }
