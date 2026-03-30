@@ -25,61 +25,20 @@ const { startAnvil, stopAnvil } = require("./anvilFork.js");
 const {
     ERC20_ABI,
     WETH_ABI,
+    UNISWAP_V2_PAIR_ABI,
     ADDRESSES
 } = require("./abis.js");
 
-// Uniswap V2 Pair ABI (minimal for swap)
-const UNISWAP_V2_PAIR_ABI = [
-    {
-        type: "function",
-        name: "swap",
-        inputs: [
-            { name: "amount0Out", type: "uint256" },
-            { name: "amount1Out", type: "uint256" },
-            { name: "to", type: "address" },
-            { name: "data", type: "bytes" }
-        ],
-        outputs: [],
-        stateMutability: "nonpayable"
-    },
-    {
-        type: "function",
-        name: "getReserves",
-        inputs: [],
-        outputs: [
-            { name: "reserve0", type: "uint112" },
-            { name: "reserve1", type: "uint112" },
-            { name: "blockTimestampLast", type: "uint32" }
-        ],
-        stateMutability: "view"
-    },
-    {
-        type: "function",
-        name: "token0",
-        inputs: [],
-        outputs: [{ name: "", type: "address" }],
-        stateMutability: "view"
-    },
-    {
-        type: "function",
-        name: "token1",
-        inputs: [],
-        outputs: [{ name: "", type: "address" }],
-        stateMutability: "view"
-    }
-];
+// Import helper functions
+const {
+    getMulticallScripterABI,
+    deployMulticallScripter
+} = require("./helpers.js");
 
 // Uniswap V2 WETH-DAI pair address (mainnet)
 const UNISWAP_V2_WETH_DAI_PAIR = "0xA478c2975Ab1Ea89e8196811F51A7B7Ade33eB11";
 
-// Get MulticallScripter ABI (from build artifacts)
-function getMulticallScripterABI() {
-    const fs = require('fs');
-    const path = require('path');
-    const abiPath = path.join(__dirname, '../../out/MulticallScripter.sol/MulticallScripter.json');
-    const data = JSON.parse(fs.readFileSync(abiPath, 'utf8'));
-    return data.abi;
-}
+
 
 async function main() {
     console.log("🚀 Uniswap V2 Direct Swap Example (No Router)");
@@ -152,21 +111,9 @@ async function main() {
         console.log(`   WETH Reserve: ${formatEther(wethReserve)} WETH`);
         console.log(`   DAI Reserve: ${formatEther(daiReserve)} DAI\n`);
 
-        // 1. Deploy MulticallScripter
-        console.log("4. Deploying MulticallScripter...");
-        const { execSync } = require('child_process');
-        const bytecode = execSync('forge inspect MulticallScripter bytecode', { cwd: process.cwd() }).toString().trim();
-
-        const deployHash = await walletClient.deployContract({
-            abi: [{ type: "constructor", inputs: [], stateMutability: "nonpayable" }],
-            bytecode,
-            account,
-        });
-
-        const deployReceipt = await publicClient.waitForTransactionReceipt({ hash: deployHash });
-        const multicallAddress = deployReceipt.contractAddress;
-        console.log(`   Contract: ${multicallAddress}\n`);
-
+        // 1. Deploy MulticallScripter using helper
+        const multicallAddress = await deployMulticallScripter(walletClient, publicClient, account);
+        
         // Get MulticallScripter ABI
         const multicallScripterABI = getMulticallScripterABI();
 

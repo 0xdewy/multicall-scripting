@@ -275,11 +275,31 @@ function printStrategy(ethAmount, formatEther) {
     console.log(`8. Transfer USDC to user`);
 }
 
+// Deploy MulticallScripter contract
+async function deployMulticallScripter(walletClient, publicClient, account) {
+    console.log("Deploying MulticallScripter...");
+    const { execSync } = require('child_process');
+    const bytecode = execSync('forge inspect MulticallScripter bytecode', { cwd: process.cwd() }).toString().trim();
+    
+    const deployHash = await walletClient.deployContract({
+        abi: [{ type: "constructor", inputs: [], stateMutability: "nonpayable" }],
+        bytecode,
+        account,
+    });
+    
+    const deployReceipt = await publicClient.waitForTransactionReceipt({ hash: deployHash });
+    const multicallAddress = deployReceipt.contractAddress;
+    console.log(`   MulticallScripter: ${multicallAddress}`);
+    
+    return multicallAddress;
+}
+
 module.exports = {
     getMulticallScripterABI,
     createContract,
     analyzeReturnValues,
     getTransactionTrace,
     printReceipt,
-    printStrategy
+    printStrategy,
+    deployMulticallScripter
 };

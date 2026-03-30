@@ -1,128 +1,190 @@
 # Multicall Scripting
 
-A library for building and executing complex multi-call transactions on Ethereum, with support for struct returns, dynamic types, and sophisticated DeFi strategies.
-
-## Features
-
-- **Multi-call Transaction Building**: Create complex batched transactions
-- **Struct Return Support**: Handle struct returns as objects (property access, not arrays)
-- **Dynamic Type Support**: Use dynamic types (arrays, bytes) as direct input
-- **DeFi Strategy Examples**: Pre-built leveraged yield strategies
-- **EIP-7702 Smart Wallet**: Authorization system with EIP-712 signatures
-- **ERC-4337 Compatibility**: Entry point integration for account abstraction
+Execute multiple contract calls atomically with return value chaining. Build complex DeFi strategies in a single transaction.
 
 ## Quick Start
 
-### Installation
-
 ```bash
-# Clone the repository
 git clone <repository-url>
 cd multicall-scripting
-
-# Build contracts
-forge build
-
-# Run tests
-forge test
+cd js && npm install
+cd .. && forge build
 ```
 
-### JavaScript Library
+## JavaScript Examples with Return Value Chaining
+
+### Basic Return Value Usage
 
 ```javascript
 const { TransactionBuilder } = require("./js/index.js");
+const { ERC20_ABI } = require("./abis.js");
 
 const builder = new TransactionBuilder();
 
-// Add calls to the transaction
-builder.addCall(abi, contractAddress, functionName, args, value);
+// Get token balance (returns descriptor)
+const balance = builder.addCall(
+  ERC20_ABI,
+  tokenAddress,
+  "balanceOf",
+  [userAddress],
+  0n
+);
 
-// Build the transaction
-const transaction = builder.build();
+// Transfer exact balance using return value
+builder.addCall(
+  ERC20_ABI,
+  tokenAddress,
+  "transfer",
+  [recipientAddress, balance], // balance descriptor used as input
+  0n
+);
 
-// Returns: { targets, offsets, calldatas, msgValues }
+const tx = builder.build();
+await multicallScripter.execute(tx.targets, tx.offsets, tx.calldatas, tx.msgValues);
 ```
 
-## Examples
+### Struct Return Values
 
-See the `js/examples/` directory for comprehensive DeFi strategy examples:
+```javascript
+const { STRUCT_ABI } = require("./abis.js");
 
-```bash
-# Run a simple strategy demo
-node js/examples/runStrategyDemo.js
+const builder = new TransactionBuilder();
 
-# Test strategy components
-node js/examples/testSimpleStrategy.js
+// Function returns: { amount: uint256, recipient: address }
+const swapResult = builder.addCall(
+  STRUCT_ABI,
+  swapContract,
+  "executeSwap",
+  [tokenIn, tokenOut, amountIn],
+  0n
+);
 
-# Run leveraged yield strategy
-node js/examples/simpleLeverageExample.js
+// Access struct fields from return value
+builder.addCall(
+  ERC20_ABI,
+  tokenOut,
+  "transfer",
+  [swapResult.recipient, swapResult.amount], // Struct field descriptors
+  0n
+);
+
+const tx = builder.build();
+await multicallScripter.execute(tx.targets, tx.offsets, tx.calldatas, tx.msgValues);
+
+```
+## Solidity Interface (Forge Tests)
+
+The Solidity `CallBuilder` system provides full return value chaining for testing complex strategies in foundry:
+
+```solidity
+// test/MyStrategy.t.sol - Use in Forge tests
+import {CallBuilder, Scripter, VarLib} from "src/CallBuilder.sol";
+
+contract MyStrategyTest is CallBuilder, Scripter {
+    using VarLib for uint256;
+    
+    function testReturnValueChain() public {
+        // Get balance
+        uint256 balanceCall = call_static(
+            token,
+            abi.encodeCall(IERC20.balanceOf, (address(this)))
+        );
+        
+        // Transfer exact balance using return value
+        uint256 transferCall = call(
+            token,
+            abi.encodeCall(IERC20.transfer, (recipient, 0)), // 0 = placeholder
+            0
+        );
+        
+        // Chain: balance → transfer amount parameter
+        useCallOutput(
+            balanceCall.first(),          // balanceOf return value
+            transferCall.second()// transfer amount param
+        );
+        
+        // Build and execute
+        (address[] memory targets, uint256[] memory offsets, 
+         bytes[] memory calldatas, uint256[] memory values) = build();
+        multicallScripter.execute(targets, offsets, calldatas, values);
+    }
+}
 ```
 
-### Leveraged Yield Strategy
+## Technical Details
 
-The library includes a 7-step leveraged yield strategy:
-1. Wrap ETH → WETH
-2. Supply WETH to Aave as collateral  
-3. Borrow USDC against WETH
-4. Swap USDC → WETH on Uniswap V3
-5. Repeat leverage loops (2-3x)
-6. Stake yield-bearing assets
-7. Stake LP tokens for governance rewards
+### Return Value Types
 
-## EIP-7702 Smart Wallet
+`TransactionBuilder.addCall()` returns descriptors based on function signature:
 
-The `7702Caller.sol` contract provides:
-- EIP-7702 authorization with EIP-712 signatures
-- Multi-signer management
-- Batch execution inheritance from `MulticallScripter`
-- ERC-4337 entry point compatibility
+| Return Type | JavaScript Return | Usage |
+|-------------|-------------------|-------|
+| `uint256` | Single descriptor | `balance` |
+| `(uint256, address)` | Array `[desc1, desc2]` | `results[0]`, `results[1]` |
+| `struct Person` | Struct proxy `{name, age}` | `person.name`, `person.age` |
+| `uint256[]` | Array descriptor | `array.with_length(n)[i]` |
 
-See `README-7702CALLER.md` for details.
+### Memory Offsets
+
+The system uses precise memory offsets for return value chaining:
+
+```javascript
+// Static call stores return data at memory location
+const call1 = builder.addCall(/* ... */); // Returns stored at offset 0x00
+
+// Subsequent calls can reference this memory
+const call2 = builder.addCall(/* ... */, [call1]); // Uses data from offset 0x00
+```
+
+### Constraints
+
+- **Struct field descriptors** as function arguments may produce incorrect offsets
+- **Complex nested chaining** has implementation limitations
+- **Use literal values** for reliable argument passing
+- **Solidity interface** provides more robust chaining for complex strategies
+
+## API Reference
+
+### `TransactionBuilder`
+
+```javascript
+class TransactionBuilder {
+    // Add call, returns descriptor(s) for return values
+    addCall(abi, target, functionName, args, msgValue = 0n): object | array
+    
+    // Build transaction for MulticallScripter.execute()
+    build(): { targets, offsets, calldatas, msgValues }
+}
+```
+
+### `CallBuilder` System (Solidity)
+
+```solidity
+// Core chaining mechanism
+function useCallOutput(VarLib.Var memory returnData, VarLib.Var memory callParameter)
+
+// Helper for common positions
+function first(uint256 callIndex) returns (Var memory)  // First return value
+function second(uint256 callIndex) returns (Var memory) // Second return value
+function withMemRange(uint256 callIndex, uint256 start, uint256 length) returns (Var memory)
+```
 
 ## Testing
 
 ```bash
-# Run all tests (41 tests)
-forge test
+# Run examples
+cd js/examples
+./run_anvil.sh
+bun run univ2_router.js
 
-# Run specific test suites
-forge test --match-test test_js_complex_structs
-forge test --match-contract 7702Caller
+# Run Solidity tests
+forge test --match-test test_return_value_chaining
+forge test --match-test test_js_interface
 ```
 
-## Foundry
+## Examples Directory
 
-**Foundry is a blazing fast, portable and modular toolkit for Ethereum application development written in Rust.**
-
-Foundry consists of:
-
-- **Forge**: Ethereum testing framework
-- **Cast**: Swiss army knife for EVM interactions
-- **Anvil**: Local Ethereum node
-- **Chisel**: Solidity REPL
-
-## Documentation
-
-- Foundry: https://book.getfoundry.sh/
-- Examples: `js/examples/README.md`
-- 7702Caller: `README-7702CALLER.md`
-
-## Usage
-
-### Build
-
-```shell
-forge build
-```
-
-### Test
-
-```shell
-forge test
-```
-
-### Run Examples
-
-```shell
-node js/examples/runStrategyDemo.js
-```
+- `js/examples/univ2_router.js` - Direct Uniswap swap with return value usage
+- `js/examples/multiple_swaps.js` - Multi-swap strategy
+- `js/examples/weth_aave.js` - Aave integration
+- `test/CallBuilder.t.sol` - Solidity return value chaining tests
