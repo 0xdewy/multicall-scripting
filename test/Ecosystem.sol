@@ -1,3 +1,5 @@
+pragma solidity ^0.8.28;
+
 interface IMulticall3 {
     struct Call3Value {
         address target;
