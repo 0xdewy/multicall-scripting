@@ -76,7 +76,7 @@ async function main() {
     };
     
     // 2. Build transaction with transfer
-    console.log('2. Building DeFi transaction with transfer...');
+    console.log('2. Building transaction...');
     const builder = new TransactionBuilder();
     
     const initialEth = parseEther("1");
@@ -93,9 +93,9 @@ async function main() {
       [],
       initialEth
     );
+    console.log('   WETH deposit call added');
     
-    // Step 2: Approve WETH for Uniswap
-    console.log(`   2. Approve WETH for Uniswap`);
+    console.log('   Adding WETH approve call...');
     builder.addCall(
       ERC20_ABI,
       ADDRESSES.WETH,
@@ -103,13 +103,13 @@ async function main() {
       [ADDRESSES.UNISWAP_V2_ROUTER, initialEth],
       0n
     );
+    console.log('   WETH approve call added');
     
-    // Step 3: Swap WETH → DAI on Uniswap
-    console.log(`   3. Swap WETH → DAI on Uniswap`);
     const swapPath = [ADDRESSES.WETH, ADDRESSES.DAI];
     const deadline = Math.floor(Date.now() / 1000) + 3600;
     const minOut = 0n;
     
+    console.log('   Adding Uniswap swap call...');
     builder.addCall(
       UNISWAP_V2_ROUTER_ABI,
       ADDRESSES.UNISWAP_V2_ROUTER,
@@ -117,6 +117,7 @@ async function main() {
       [initialEth, minOut, swapPath, multicallAddress, deadline],
       0n
     );
+    console.log('   Uniswap swap call added');
     
     // Step 4: Approve DAI for Curve
     console.log(`   4. Approve DAI for Curve swap`);
@@ -128,31 +129,48 @@ async function main() {
       [multicallAddress],
       0n
     );
+    );
+    console.log('   DAI balanceOf call added, daiBalance:', daiBalance);
 
-    builder.addCall(
-      ERC20_ABI,
-      ADDRESSES.DAI,
-      "approve",
-      [ADDRESSES.CURVE_DAI_USDC_USDT_POOL, daiBalanceToApprove],
-      0n
+    console.log('   Adding DAI approve call...');
+    console.log('   daiBalance type:', typeof daiBalance);
+    console.log('   daiBalance:', JSON.stringify(daiBalance, null, 2));
+    try {
+      builder.addCall(
+        ERC20_ABI,
+        ADDRESSES.DAI,
+        "approve",
+        [ADDRESSES.CURVE_DAI_USDC_USDT_POOL, daiBalance],
+        0n
+      );
+      console.log('   DAI approve call added');
+    } catch (error) {
+      console.error('   Error adding DAI approve call:', error.message);
+      console.error('   Error stack:', error.stack);
+      throw error;
+    }
+
+    // Note: Cannot use return value more than once so have to fetch balance again
+    console.log('   Adding second DAI balanceOf call...');
+    const daiBalance2 = builder.addCall(
+        ERC20_ABI,
+        ADDRESSES.DAI,
+        "balanceOf",
+        [multicallAddress],
+        0n
     );
+    console.log('   Second DAI balanceOf call added, daiBalance2:', daiBalance2);
     
-    const daiToSwap = builder.addCall(
-      ERC20_ABI,
-      ADDRESSES.DAI,
-      "balanceOf",
-      [multicallAddress],
-      0n
-    );
     // Step 5: Curve swap DAI → USDC
     const curveMinOut = 0n;
+    console.log('   Adding Curve exchange call...');
     builder.addCall(
       CURVE_POOL_ABI,
       ADDRESSES.CURVE_DAI_USDC_USDT_POOL,
-      "exchange",
-      [0, 1, daiToSwap, curveMinOut],
+      [0, 1, daiBalance2, curveMinOut],
       0n
     );
+    console.log('   Curve exchange call added');
     
     // Step 6: Transfer USDC to user (approximate amount - in reality would need return value)
     console.log(`   6. Transfer USDC to user account`);
@@ -167,10 +185,10 @@ async function main() {
     builder.addCall(
       ERC20_ABI,
       ADDRESSES.USDC,
-      "transfer",
-      [account.address, usdcOut],
+       [account.address, usdcOut],
       0n
     );
+    console.log('   USDC transfer call added');
     
     const transaction = builder.build();
     console.log(`\n✅ Strategy built with ${transaction.targets.length} calls\n`);
@@ -178,19 +196,15 @@ async function main() {
     // 3. Execute transaction
     console.log('3. Executing atomic transaction...');
     
-    const executeHash = await multicallScripter.write(
-      'execute',
-      [
-        transaction.targets,
-        transaction.offsets,
-        transaction.calldatas,
-        transaction.msgValues.map(v => BigInt(v))
-      ],
-      {
-        account,
-        value: initialEth
-      }
-    );
+    const executeHash = await walletClient.writeContract({
+      address: multicallAddress,
+      abi: multicallScripterABI,
+      functionName: "execute",
+      args: [transaction.targets, transaction.offsets, transaction.calldatas, transaction.msgValues],
+      value: initialEth
+    });
+    
+    console.log(`   Transaction hash: ${executeHash}\n`);
     
     console.log(`   Transaction hash: ${executeHash}\n`);
     

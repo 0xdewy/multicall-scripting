@@ -43,6 +43,82 @@ contract JsLibrary is Test, CallBuilder, MulticallScripter {
         stringAndBytesOps = new StringAndBytesOperations();
     }
 
+    function test_js_dynamic_array() public {
+    // Call the JavaScript file using FFI
+        string[] memory inputs = new string[](4);
+        inputs[0] = "bun";
+        inputs[1] = "js/test/useDynamicVar.js";
+        inputs[2] = vm.toString(address(dynamicVar));
+        // Get the path to the ABI - it's in the out directory
+        inputs[3] = "out/Helpers.sol/DynamicVar.json";
+
+        // Execute the JavaScript file
+        bytes memory res = vm.ffi(inputs);
+
+        // Parse the JSON output
+        string memory json = string(res);
+
+        // Extract arrays from JSON
+        address[] memory jsTargetsArray = vm.parseJsonAddressArray(json, ".targets");
+        uint256[] memory jsOffsetsArray = vm.parseJsonUintArray(json, ".offsets");
+        bytes[] memory jsCalldatasArray = vm.parseJsonBytesArray(json, ".calldatas");
+        uint256[] memory jsMsgValuesArray = vm.parseJsonUintArray(json, ".msgValues");
+
+        // Verify the arrays have the same length
+        assertEq(jsTargetsArray.length, 2);
+        assertEq(jsOffsetsArray.length, 2);
+        assertEq(jsCalldatasArray.length, 2);
+        assertEq(jsMsgValuesArray.length, 0); // No msgValues expected
+
+        // Execute the transaction
+        multicall.execute(jsTargetsArray, jsOffsetsArray, jsCalldatasArray, jsMsgValuesArray);
+
+        // Verify the addresses were set correctly
+        address[] memory storedAddresses = dynamicVar.getAddresses();
+        assertEq(storedAddresses.length, 3);
+        assertEq(storedAddresses[0], address(0xcafe));
+        assertEq(storedAddresses[1], address(0xbeef));
+        assertEq(storedAddresses[2], address(0xdead));
+    }
+
+    function test_js_array_element() public {
+    // Call the JavaScript file using FFI
+        string[] memory inputs = new string[](4);
+        inputs[0] = "bun";
+        inputs[1] = "js/test/useArrayElement.js";
+        inputs[2] = vm.toString(address(dynamicVar));
+        // Get the path to the ABI - it's in the out directory
+        inputs[3] = "out/Helpers.sol/DynamicVar.json";
+
+        // Execute the JavaScript file
+        bytes memory res = vm.ffi(inputs);
+
+        // Parse the JSON output
+        string memory json = string(res);
+
+        // Extract arrays from JSON
+        address[] memory jsTargetsArray = vm.parseJsonAddressArray(json, ".targets");
+        uint256[] memory jsOffsetsArray = vm.parseJsonUintArray(json, ".offsets");
+        bytes[] memory jsCalldatasArray = vm.parseJsonBytesArray(json, ".calldatas");
+        uint256[] memory jsMsgValuesArray = vm.parseJsonUintArray(json, ".msgValues");
+
+        // Verify the arrays have the same length
+        assertEq(jsTargetsArray.length, 2);
+        assertEq(jsOffsetsArray.length, 2);
+        assertEq(jsCalldatasArray.length, 2);
+        assertEq(jsMsgValuesArray.length, 0); // No msgValues expected
+
+        // Execute the transaction
+        multicall.execute(jsTargetsArray, jsOffsetsArray, jsCalldatasArray, jsMsgValuesArray);
+
+        // Verify the addresses were set correctly
+        address[] memory storedAddresses = dynamicVar.getAddresses();
+        assertEq(storedAddresses.length, 3);
+        assertEq(storedAddresses[0], address(0xaaaa));
+        assertEq(storedAddresses[1], address(0xbeef));
+        assertEq(storedAddresses[2], address(0xcccc));
+    }
+
     function test_js_complex_structs() public {
         Structs.Static memory stat = Structs.Static(2, 3);
         Structs.Complex memory complex = Structs.Complex(1, stat);
