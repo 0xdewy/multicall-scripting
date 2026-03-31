@@ -13,13 +13,42 @@ Regular multicall solutions (like Multicall3) only batch independent calls. They
 
 **Multicall Scripting solves this** by enabling true return value chaining within a single atomic execution.
 
+## 🏗️ Technical Architecture
+
+### How It Works: Memory-Based Return Value Chaining
+
+Adds scripting to multicall by precalculating memory offsets offchain. The contract executes calls with return data automatically placed for future calls, enabling chaining with minimal overhead.
 
 ### Core Components
 
 1. **`MulticallScripter.sol`**: Core contract that executes chained calls with memory copying
-2. **`CallBuilder.sol`**: Solidity DSL for building chained calls in tests
+2. **`CallBuilder.sol`**: Solidity DSL for building chained calls in tests  
 3. **`TransactionBuilder` (JavaScript)**: Type-safe builder for complex transactions
 4. **Descriptors**: Proxy objects that represent future return values
+
+### Offset Data Layout
+
+The system uses compact 256-bit offset encoding to specify how return data should be handled:
+
+#### Regular Calls (StaticCall and StateChangingCall)
+
+| Bits | Field | Description |
+|------|-------|-------------|
+| 8 | `calltype` | `0xFF` for static call, `0xFE` for regular call |
+| 120 | `memTarget/returnOffset` | Memory offset where return data should be stored |
+| 120 | `resultLength/returnSize` | Size of return data to copy |
+
+#### Partial Return Calls (`STATIC_CALL_PARTIAL_RETURN_FLAG = 0xFC`)
+
+| Bits | Field | Description |
+|------|-------|-------------|
+| 8 | `calltype` | `0xFC` for static call with partial return |
+| 8 | `valueIndex` | Index into values array for msg.value (0 if no value) |
+| 120 | `memTargets` (40×3) | Array of 3 memory targets where variables should be copied |
+| 48 | `resultLengths` (16×3) | Array of 3 lengths of variables to copy |
+| 48 | `returnOffsets` (16×3) | Array of 3 offsets from beginning of return data |
+| 16 | `returnDataSize` | Total length of return data (max 65535 bytes) |
+| 8 | `num_vars` | Number of variable segments to use (0-3) |
 
 ## ⚡ Quick Start
 
@@ -132,16 +161,6 @@ class TransactionBuilder {
   build()
 }
 
-// Structs: You can use the struct as you normally would in future calls.
-const result = builder.addCall(abi, target, "getStruct", []);
-result.fieldName;
-
-// Arrays: You must tell the library the length of dynamic arrays to use them
-const result = builder.addCall(abi, target, "getStruct", []);
-result.with_length(n);
-// you can use specific elements from the array, or use the whole array
-result[0];
-
 ```
 
 ### Solidity: `CallBuilder` System
@@ -167,7 +186,7 @@ function call(address target, bytes memory data) returns (uint256 callIndex)
 
 ### Dynamic Type Support
 
-Multicall Scripting supports basic dynamic types:
+Basic dynamic type support with length specification:
 
 ```javascript
 // Strings
@@ -195,70 +214,18 @@ builder.addCall(abi, target, "updateUser", [
 
 Note: The library needs to be able to predetermine memory locations for all data so it cannot handle dynamic types that also have dynamic memory offsets. 
 
-## 🏗️ Technical Architecture
-
-### How It Works: Memory-Based Return Value Chaining
-The contract adds basic scripting abilities on top of a regular multicall contract by allowing the user to define where the returndata is going to be saved for each call. It's highly efficient as the offsets are precalculated offchain and encoded in a way that the smart-contract can just make the calls and the required returndata is automatically encoded into the correct position for future calls. For this reason it can utilize returndata and complex sequences with almost no overhead. The tradeoffs with this technique is that it requires more off-chain verification and simulation as well as having limits into how complex the return data can be. If you are using returndata that contains a dynamic array you need to specify the length of this array so the contract can automatically encode it into a future call. This was a deliberate decision to favor efficiency over supporting 100% of the situations people may want to use it for.
-
-### Offset Data Layout
-
-The system uses compact 256-bit offset encoding to specify how return data should be handled. There are two distinct layouts:
-
-#### Regular Calls (StaticCall and StateChangingCall)
-
-For standard calls that copy entire return data segments:
-
-```
-Bit layout (256 bits total):
-┌────────────┬──────────────────────────────┬──────────────────────────────┐
-│ 8 bits     │ 120 bits                     │ 120 bits                     │
-├────────────┼──────────────────────────────┼──────────────────────────────┤
-│ calltype   │ memTarget/returnOffset       │ resultLength/returnSize      │
-└────────────┴──────────────────────────────┴──────────────────────────────┘
-```
-
-- **calltype**: `0xFF` for static call, `0xFE` for regular call
-- **memTarget/returnOffset**: Memory offset where return data should be stored (120 bits, ~1.3×10³⁶ possible values)
-- **resultLength/returnSize**: Size of return data to copy (120 bits, supports up to ~1.3×10³⁶ bytes)
-
-#### Partial Return Calls (STATIC_CALL_PARTIAL_RETURN_FLAG = 0xFC)
-
-For calls that extract specific segments from return data:
-
-```
-Bit layout (256 bits total):
-┌────────────┬────────────┬──────────────────────────────┬──────────────────┬──────────────────┬────────────────┬────────────┐
-│ 8 bits     │ 8 bits     │ 120 bits                     │ 48 bits          │ 48 bits          │ 16 bits        │ 8 bits     │
-├────────────┼────────────┼──────────────────────────────┼──────────────────┼──────────────────┼────────────────┼────────────┤
-│ calltype   │ valueIndex │ memTargets (40×3)            │ resultLengths    │ returnOffsets    │ returnDataSize │ num_vars   │
-│            │            │                              │ (16×3)           │ (16×3)           │                │            │
-└────────────┴────────────┴──────────────────────────────┴──────────────────┴──────────────────┴────────────────┴────────────┘
-```
-
-- **calltype**: `0xFC` for static call with partial return
-- **valueIndex**: Index into values array for msg.value (0 if no value)
-- **memTargets**: Array of 3 memory targets (40 bits each) where variables should be copied
-- **resultLengths**: Array of 3 lengths (16 bits each) of variables to copy
-- **returnOffsets**: Array of 3 offsets (16 bits each) from beginning of return data  
-- **returnDataSize**: Total length of return data (max 65535 bytes)
-- **num_vars**: Number of variable segments to use (0-3)
-
-#### Key Constraints
-- Maximum 3 variables per call due to encoding space constraints
-- `memTargets` are 40-bit offsets relative to calldata start
-- `resultLengths` and `returnOffsets` are 16-bit values supporting up to 65535 bytes
-- Regular calls copy entire return data segments in one operation
-- Partial return calls extract specific segments for precise memory placement
-
-
 ## ⚠️ Limitations & Considerations
 
 ### Technical Constraints
 
-1. **Maximum 3 variables per call** can be chained (due to encoding space)
-2. **Dynamic arrays require `.with_length()`** before use
-3. **No Variable Reuse** return data can only be used once
+1. **Maximum 3 variables per call** due to 256-bit encoding space
+2. **Dynamic types require length specification** via `.with_length()` before use
+3. **No return data reuse** - each return value can only be used once
+4. **Memory offset limits** - `memTargets` are 40-bit offsets, `resultLengths` and `returnOffsets` are 16-bit values
+5. **Return data size limit** - `returnDataSize` supports up to 65535 bytes
 
+### ⚠️ Security Warning
+This repository has not been audited and prioritizes efficiency over safety. For experimental use only. Reach out if you want to collaborate on an audit.
 
 ## 📚 Further Reading
 
@@ -278,7 +245,7 @@ Bit layout (256 bits total):
 
 ## 🤝 Contributing
 
-We welcome contributions!
+Contributions are welcome!
 
 ### Development Setup
 
@@ -303,9 +270,6 @@ cd js/examples && bun run multiple_swaps.js
 - [ ] Version that returns data for static call support
 - [ ] Additional DSLs (Python, Rust)
 - [ ] Formal verification of memory safety
-
-### Warning
-This repo has not been audited and generally focuses on efficiency over safety. For degens only. Reach out if you want to collaborate on an audit.
 
 ## 📄 License
 
