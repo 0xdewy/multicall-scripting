@@ -4,3 +4,6 @@
 [submodule "lib/weiroll-huff"]
 	path = lib/weiroll-huff
 	url = https://github.com/0xdewy/weiroll-huff
+[submodule "lib/solady"]
+	path = lib/solady
+	url = https://github.com/Vectorized/solady

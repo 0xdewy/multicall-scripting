@@ -40,6 +40,35 @@ contract CallBuilder is Constants {
         offsets = (STATIC_CALL_FLAG << VALUE_OFFSET) | (memTarget << 120) | resultLength;
     }
 
+    // CALL with no msg.value and no return data
+    function stateChangingCall() internal pure returns (uint256) {
+        return stateChangingCall(0);
+    }
+
+    // CALL with msg.value
+    // NOTE: the index is shifted up 1, so that 0 mean there is no msg.value...1 == first item in value array
+    function stateChangingCall(uint256 msgValueIndex) internal pure returns (uint256) {
+        require(msgValueIndex <= type(uint8).max, "msgValueIndex too large");
+        return stateChangingCall(msgValueIndex, 0x0, 0x0);
+    }
+
+    // CALL with return data.
+    // NOTE: index of msg.value is shifted so 0 == no msg.value, 1 == first index in values array
+    //      8         8           120         120
+    // <calltype><valueIndex><memTarget><resultLength>
+    function stateChangingCall(uint256 msgValueIndex, uint256 memTarget, uint256 resultLength)
+        internal
+        pure
+        returns (uint256 offsets)
+    {
+        require(msgValueIndex <= type(uint8).max, "msgValueIndex too large");
+        require(memTarget <= type(uint120).max, "memTarget value too large");
+        require(resultLength <= type(uint120).max, "resultLength value too large");
+
+        // ignore value since it has to be 0 for static calls
+        offsets = (CALL_FLAG << VALUE_OFFSET) | (msgValueIndex << 240) | (memTarget << 120) | resultLength;
+    }
+
     // parses return data and can select up to 3 variables to use in following calls
     //     8           8      120 (40x3)    48 (16x3)       48 (16x3)        16          8
     // <calltype><valueIndex><memTargets><resultLengths><returnOffsets><resultLength><num_vars>
@@ -50,20 +79,19 @@ contract CallBuilder is Constants {
         uint256 returnLength
     ) internal pure returns (uint256 offsets) {
         // static call + save all of return data + memcpy parts of return data to proper location
-
-        uint256 calltype = 0xFC;
-        uint256 encodedMemTargets = 0x0;
-        uint256 encodedResultLengths = 0x0;
-        uint256 encodedOffsets = 0x0;
-
         require(
             memTargets.length <= PARTIAL_RETURN_VARS && resultLengths.length <= PARTIAL_RETURN_VARS
                 && returnOffsets.length <= PARTIAL_RETURN_VARS,
             "invalid number of params"
         );
-        require(returnLength <= type(uint24).max, "returnLength is too large");
+        require(returnLength <= type(uint16).max, "returnLength is too large");
 
         uint256 len = memTargets.length;
+
+        uint256 encodedMemTargets = 0x0;
+        uint256 encodedResultLengths = 0x0;
+        uint256 encodedOffsets = 0x0;
+
         for (uint256 i = 0; i < len; i++) {
             require(memTargets[i] <= type(uint40).max, "memTarget value too large");
             require(resultLengths[i] <= type(uint16).max, "resultLength value too large");
@@ -76,15 +104,9 @@ contract CallBuilder is Constants {
             encodedOffsets |= (returnOffsets[i] << (varOffset * 16));
         }
 
-        offsets = (calltype << 248) | (0x00 << 240) | encodedMemTargets << 120 | (encodedResultLengths << 72)
-            | (encodedOffsets << 24) | (returnLength << 8) | memTargets.length;
-    }
-
-    // if msgValue is 0, just leave it as 0, otherwise indicate index
-    // TODO: might need to support using return data from this
-    function stateChangingCall(uint256 msgValueIndex) internal pure returns (uint256 offsets) {
-        require(msgValueIndex <= type(uint8).max, "msgValueIndex too large");
-        offsets = (CALL_FLAG << 248) | (msgValueIndex << 240);
+        // TODO: handle for msg.value as well
+        offsets = (STATIC_CALL_PARTIAL_RETURN_FLAG << 248) | (0x00 << 240) | encodedMemTargets << 120
+            | (encodedResultLengths << 72) | (encodedOffsets << 24) | (returnLength << 8) | len;
     }
 }
 
@@ -95,45 +117,29 @@ library VarLib {
         uint256 length;
     }
 
-    // Creates a new Var with the given callIndex, defaulting start and length to 0
-    function newVar(uint256 callIndex) internal pure returns (Var memory) {
-        return Var(callIndex, 0, 0);
-    }
-
-    // Sets the start value and returns the modified Var
-    function withStart(Var memory self, uint256 _start) internal pure returns (Var memory) {
-        self.start = _start;
-        return self;
-    }
-
-    // Sets the length value and returns the modified Var
-    function withLength(Var memory self, uint256 _length) internal pure returns (Var memory) {
-        self.length = _length;
-        return self;
-    }
-
-    // Convenience method to create a Var with default start = 0x0 and length = 0x20
-    function single(uint256 callIndex) internal pure returns (Var memory) {
+    // Creates a Var with callIndex, start=0x0, length=0x20 (first parameter)
+    function first(uint256 callIndex) internal pure returns (Var memory) {
         return Var(callIndex, 0x0, 0x20);
     }
 
-    function second_parameter_single(uint256 callIndex) internal pure returns (Var memory) {
-      return Var(callIndex, 0x20, 0x20);
+    // Creates a Var with callIndex, start=0x20, length=0x20 (second parameter)
+    function second(uint256 callIndex) internal pure returns (Var memory) {
+        return Var(callIndex, 0x20, 0x20);
     }
 
-    function third_parameter_single(uint256 callIndex) internal pure returns (Var memory) {
-      return Var(callIndex, 0x40, 0x20);
+    // Creates a Var with callIndex, start=0x40, length=0x20 (third parameter)
+    function third(uint256 callIndex) internal pure returns (Var memory) {
+        return Var(callIndex, 0x40, 0x20);
     }
 
+    // Sets the start and length values for a Var
+    function withMemRange(uint256 callIndex, uint256 _start, uint256 _length) internal pure returns (Var memory) {
+        return Var(callIndex, _start, _length);
+    }
 }
 
-
 contract Scripter is CallBuilder {
-  using VarLib for VarLib.Var;
-
-    // Custom errors
-    error MustUseDataFromPreviousCall();
-    error InvalidCallIndex();
+    using VarLib for uint256;
 
     // Struct to store a single call's data
     struct Call {
@@ -150,14 +156,13 @@ contract Scripter is CallBuilder {
 
     // Storage array to hold all calls
     Call[] public calls;
-    // Free memory pointer (in storage)
+    // Free memory pointer
     uint256 public free_mem;
 
     function _pushCall(address target, bytes memory callData, uint256 callType, uint256 value)
         private
         returns (uint256)
     {
-        require(target != address(0), "Invalid target");
         uint256[] memory empty = new uint256[](0);
         calls.push(Call(target, callData, callType, free_mem, empty, empty, empty, value, false));
         free_mem += callData.length;
@@ -172,23 +177,26 @@ contract Scripter is CallBuilder {
         return _pushCall(target, callData, CALL_FLAG, value);
     }
 
-    // replace a parameter from previous calldata
-    function replaceVar(VarLib.Var memory paramBeingReplaced, VarLib.Var memory newParam) public {
-        Call storage this_call = calls[paramBeingReplaced.callIndex];
-        Call storage old_call = calls[newParam.callIndex];
+    // replace a parameter with return data from a previous call
+    function useCallOutput(VarLib.Var memory returnData, VarLib.Var memory callParameter) public {
+        require(returnData.callIndex < callParameter.callIndex, "Can only use output from previous calls");
+        Call storage this_call = calls[callParameter.callIndex];
+        Call storage old_call = calls[returnData.callIndex];
 
-        //
-        bool is_special = (newParam.start != 0x0) || (old_call.memTargets.length > 0) || old_call.special;
+        // TODO: handle special return types
+        bool is_special = (returnData.start != 0x0) || (old_call.memTargets.length > 0) || old_call.special;
 
+        // memTarget is an offset -- how many bytes forward is this return data required to be set
         uint256 memTarget =
-            (this_call.memPos + paramBeingReplaced.start + 0x4) - (old_call.memPos + old_call.fnCalldata.length);
-        // modify old call to store return data in position of paramBeingReplaced
+            (this_call.memPos + callParameter.start + 0x4) - (old_call.memPos + old_call.fnCalldata.length);
+        // modify old call to store return data in position of callParameter
         old_call.memTargets.push(memTarget);
-        old_call.returnDataLens.push(paramBeingReplaced.length);
-        old_call.returnDataOffsets.push(newParam.start);
+        old_call.returnDataLens.push(callParameter.length);
+        old_call.returnDataOffsets.push(returnData.start);
         old_call.special = is_special;
     }
 
+    // TODO: handle special return types
     function build()
         external
         returns (address[] memory targets, uint256[] memory offsets, bytes[] memory datas, uint256[] memory values)
@@ -219,11 +227,19 @@ contract Scripter is CallBuilder {
             if (_call.calltype_flag == STATIC_CALL_FLAG) {
                 offsets[i] = staticCall(memTarget, returnData);
             } else if (_call.calltype_flag == CALL_FLAG) {
-                offsets[i] = stateChangingCall(values_iter);
-                values[values_iter++] = _call.msgValue;
+                require(!_call.special, "not yet supported");
+                uint256 msgValue = _call.msgValue > 0 ? values_iter + 1 : 0;
+                if (_call.msgValue > 0) {
+                    offsets[i] = stateChangingCall(values_iter + 1);
+                    values[values_iter] = _call.msgValue;
+                    values_iter++;
+                } else {
+                    offsets[i] = stateChangingCall();
+                }
             }
         }
 
+        // update values size
         assembly {
             mstore(values, values_iter)
         }

@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Unlicense
 pragma solidity >=0.8.0 <0.9.0;
 
-import "forge-std/Test.sol";
-import "forge-std/console.sol";
+import {Test, console2} from "forge-std/Test.sol";
 import "weiroll-huff/weiroll/Planner.sol";
 import "weiroll-huff/weiroll/Weiroll.sol";
 import "weiroll-huff/weiroll/CommandBuilder.sol";
@@ -15,7 +14,7 @@ interface IWeiroll {
     function execute(bytes32[] calldata _commands, bytes[] memory _state) external payable;
 }
 
-contract WeirollTest is Test, Events, CallBuilder {
+contract GasTest is Test, Events, CallBuilder {
     /// @dev Address of the VmTest contract.
     MulticallScripter multicall;
     Weiroll weiroll;
@@ -58,7 +57,7 @@ contract WeirollTest is Test, Events, CallBuilder {
         gas = gasleft();
         weiroll.execute(_commands, _state);
         gasUsed = gas - gasleft();
-        console.log("Gas - Weiroll.addUints(): ", gasUsed);
+        console2.log("Gas - Weiroll.addUints(): ", gasUsed);
 
         // encode calls for scripter contract
         for (uint256 i = 0; i < 30; i++) {
@@ -73,7 +72,7 @@ contract WeirollTest is Test, Events, CallBuilder {
         gas = gasleft();
         multicall.execute(targets, offsets, calldatas, values);
         gasUsed = gas - gasleft();
-        console.log("Gas - Scripter.addUints(): ", gasUsed);
+        console2.log("Gas - Scripter.addUints(): ", gasUsed);
 
         // make calls directly for baseline
         gas = gasleft();
@@ -81,7 +80,7 @@ contract WeirollTest is Test, Events, CallBuilder {
             uint256 val = math.add(a, b);
             events.logUint(val);
         }
-        console.log("Gas - Pure: ", gas - gasleft());
+        console2.log("Gas - Base cost: ", gas - gasleft());
     }
 
     /*

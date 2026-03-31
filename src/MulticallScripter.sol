@@ -17,29 +17,30 @@ contract Constants {
 }
 
 contract MulticallScripter is Constants {
-    /*
-        Set all calls in memory and use return data in subsequent calls
-        TODO: is it possible to avoid storing byte array lengths in memory
+    // 0x8f61746f
+    error InvalidCalltype(uint256 calltype);
 
+    /*
+      Execute a sequence of calls with the ability to use return data in subsequent calls
     */
     function execute(
         address[] calldata targets,
         uint256[] calldata offsets,
         bytes[] calldata calldatas,
         uint256[] calldata values
-    ) public payable {
+    ) public payable virtual {
         // Note: calldata byte array is encoded as follows:
         // [length(dataOffset), offset1, offset2, length1, data1, length2, data2]
         assembly {
             let calldataOffset := mload(0x40)
+            let totalCalldataBits := sub(values.offset, calldatas.offset)
 
             // copy all calldata to memory to be used for calls later
-            // NOTE: shl(5, calldatas.length) == mul(calldatas.length, 32)
-            // TODO: get total size of the byte array instead of calldatasize
-            calldatacopy(calldataOffset, add(calldatas.offset, shl(5, calldatas.length)), calldatasize())
+            // shl(5, calldatas.length) == mul(calldatas.length, 32)
+            calldatacopy(calldataOffset, add(calldatas.offset, shl(5, calldatas.length)), totalCalldataBits)
 
             // update free memory
-            mstore(0x40, add(calldataOffset, calldatasize()))
+            mstore(0x40, add(calldataOffset, totalCalldataBits))
 
             let i := 0
             // loop through all calls and execute in order
@@ -57,13 +58,14 @@ contract MulticallScripter is Constants {
                 let dataStart := add(calldataOffset, 0x20)
                 // TODO: fuzz test this
                 calldataOffset := add(calldataOffset, add(0x20, lengthPadded))
-                // clear upper bits and retrieve return data offset
-                let returnOffset := add(add(calldataOffset, 0x20), shr(136, shl(16, offset)))
                 // 0 = no value sent, 0x01-0xFFF0 = index into params
                 let callType := shr(VALUE_OFFSET, offset)
 
-                // staticall(gas, address, argsOffset, argssize, retOffset, retSize)
+                // staticall(gas, address, argsOffset, argssize, retOffset, returnDataSize)
                 if eq(callType, STATIC_CALL_FLAG) {
+                    // clear upper bits and retrieve return data offset
+                    let returnOffset := add(add(calldataOffset, 0x20), shr(136, shl(16, offset)))
+
                     // make staticcall and bubble up revert
                     if iszero(staticcall(gas(), target, dataStart, calldataLen, returnOffset, returnSize)) {
                         returndatacopy(0x00, 0x00, returndatasize())
@@ -72,15 +74,19 @@ contract MulticallScripter is Constants {
 
                     continue
                 }
+                // call (0xFE)
+                if eq(callType, CALL_FLAG) {
 
                 // clean calltype flag and extract value flag
                 let value := shr(VALUE_OFFSET, shl(8, offset))
                 // avoid jumpi by multiplying by result of conditional (if msg.value is being used)
                 let msgValue := mul(gt(value, 0), calldataload(add(values.offset, sub(shl(5, value), 0x20))))
 
-                // call (0xFE)
-                if eq(callType, sub(STATIC_CALL_FLAG, 1)) {
-                    // call(gas, address, value, argsOffset, argssize, retOffset, retSize)
+
+                    // clear upper bits and retrieve return data offset
+                    let returnOffset := add(add(calldataOffset, 0x20), shr(136, shl(16, offset)))
+
+                    // call(gas, address, value, argsOffset, argssize, retOffset, returnDataSize)
                     if iszero(call(gas(), target, msgValue, dataStart, lengthPadded, returnOffset, returnSize)) {
                         returndatacopy(0x00, 0x00, returndatasize())
                         revert(0x00, returndatasize())
@@ -89,52 +95,34 @@ contract MulticallScripter is Constants {
                     continue
                 }
 
-                // delegate call (0xFD)
-                if eq(callType, sub(STATIC_CALL_FLAG, 2)) {
-                    // TODO: delegate call?
-                    continue
-                }
-
                 // static call with partial return (0xFC)
-                if eq(callType, sub(STATIC_CALL_FLAG, 3)) {
-                    // TODO: static call with partial return data
-                    /*
-                        TODO: if need to use only part of the return data we have to save the whole return o memory and then memcopy the segment that we want into the correct place
-
-                        - if so, make static call and save data temporarily to free memory
-                        - use offset to figure out data offset + size to memcopy
-                    */
-
+                // TODO: this should support call as well
+                if eq(callType, STATIC_CALL_PARTIAL_RETURN_FLAG) {
                     // return size is modified for this type of call
-                    let retSize := shr(8, and(0xFFFF, offset))
+                    let returnDataSize := shr(8, and(0xFFFF, offset))
                     let free_mem := mload(0x40)
-                    mstore(0x40, add(free_mem, retSize))
+                    mstore(0x40, add(free_mem, returnDataSize))
 
                     // make static call and save results to free memory to mcopy variables
-                    if iszero(staticcall(gas(), target, dataStart, calldataLen, free_mem, retSize)) {
+                    if iszero(staticcall(gas(), target, dataStart, calldataLen, free_mem, returnDataSize)) {
                         returndatacopy(0x00, 0x00, returndatasize())
                         revert(0x00, returndatasize())
                     }
 
-                    // loop through return data and memcpy to correct position
-                    //
-                    //             current calldata             next calldata (needs data)          extract some vars from return
-                    // <calldata_for_current_static_call><null, 0x30, null, 0x40><other_calldata><return_data:var1, var2, var3>
+                    // all return data was added to free memory, now we need to loop through return data and memcpy to correct position
+                    // only have 240 bits for all of this, so will only support 3 variable segments. (variables already in-order count as 1 variable. just memcopy both at same time)
+                    // memTargets = uint40[3] = where the variables need to be copied to
+                    // resultLengths = uint48[3] = the length of the variables to be copied
+                    // returnOffsets = uint48[3] = offset from beginning of return data for each var
+                    // returnDataSize = uint16 = total length of return data (MAX IS 65536 -- 2048 items)
+                    // num_vars = uint8 = number of variable segments to use from last call
 
-                    // requirements:
-                    // offset of return data
-                    // offset where data should go in memory
-                    // length of each variable to be copied
-                    // only have 240 bits for all of this, so will only support 3 variables...
-                    // this puts a limitation of approx 1mil size for memTarget, return data offset, variable length
-
-                    // NOTE: offset has a different structure here
+                    // NOTE: offset has a different layout for this type of call
                     //     8           8      120 (40x3)    48 (16x3)       48 (16x3)        16          8
-                    // <calltype><valueIndex><memTargets><resultLengths><returnOffsets><resultLength><num_vars>
+                    // <calltype><valueIndex><memTargets><resultLengths><returnOffsets><returnDataSize><num_vars>
                     let o := offset
                     let calldata_start := add(calldataOffset, 0x20)
 
-                    // TODO: just use masks (deploys cost higher, runtime lower)
                     // remove calltype + value index and shift to right
                     let memTargets := shr(136, shl(16, o))
                     // let memTargets := and(shl(120, PARTIAL_RETURN_MEM_TARGET_FLAG), o);
@@ -156,10 +144,10 @@ contract MulticallScripter is Constants {
                         let var_index := mul(16, sub(2, u))
 
                         // the length of data to memcpy
-                        let resLength := and(0xFF, shr(var_index, resLengths))
+                        let resLength := and(0xFFFF, shr(var_index, resLengths))
 
                         // the offset of the return data to memcpy
-                        let returnDataOffset := and(0xFF, shr(var_index, retDatas))
+                        let returnDataOffset := and(0xFFFF, shr(var_index, retDatas))
                         returnDataOffset := add(free_mem, returnDataOffset)
 
                         // destOffset, offsetToCopyFrom, size
@@ -170,8 +158,14 @@ contract MulticallScripter is Constants {
                     continue
                 }
 
+                // delegate call (0xFD)
+                if eq(callType, DELEGATE_CALL_FLAG) {
+                    // TODO: delegate call?
+                    continue
+                }
+
                 // TODO: 0x420 is not a very descriptive error message
-                mstore(0x00, 0x420)
+                mstore(0x00, 0x8f61746f)
                 revert(0x00, 0x20)
             }
         }

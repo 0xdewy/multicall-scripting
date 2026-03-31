@@ -1,0 +1,15 @@
+{
+  "name": "multicall-scripter",
+  "version": "1.0.0",
+  "bin": {
+    "tx-builder": "./cli.js"
+  },
+  "scripts": {
+    "build": "node cli.js"
+  },
+  "dependencies": {
+    "abitype": "^1.0.8",
+    "tevm": "^1.0.0-next.147",
+    "viem": "^2.32.1"
+  }
+}
