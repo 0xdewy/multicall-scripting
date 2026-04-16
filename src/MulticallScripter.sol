@@ -74,14 +74,13 @@ contract MulticallScripter is Constants {
 
                     continue
                 }
+
                 // call (0xFE)
                 if eq(callType, CALL_FLAG) {
-
-                // clean calltype flag and extract value flag
-                let value := shr(VALUE_OFFSET, shl(8, offset))
-                // avoid jumpi by multiplying by result of conditional (if msg.value is being used)
-                let msgValue := mul(gt(value, 0), calldataload(add(values.offset, sub(shl(5, value), 0x20))))
-
+                    // clean calltype flag and extract value flag
+                    let value := shr(VALUE_OFFSET, shl(8, offset))
+                    // avoid jumpi by multiplying by result of conditional (if msg.value is being used)
+                    let msgValue := mul(gt(value, 0), calldataload(add(values.offset, sub(shl(5, value), 0x20))))
 
                     // clear upper bits and retrieve return data offset
                     let returnOffset := add(add(calldataOffset, 0x20), shr(136, shl(16, offset)))
@@ -160,11 +159,10 @@ contract MulticallScripter is Constants {
 
                 // delegate call (0xFD)
                 if eq(callType, DELEGATE_CALL_FLAG) {
-                    // TODO: delegate call?
+                    // TODO: support delegate call?
                     continue
                 }
 
-                // TODO: 0x420 is not a very descriptive error message
                 mstore(0x00, 0x8f61746f)
                 revert(0x00, 0x20)
             }

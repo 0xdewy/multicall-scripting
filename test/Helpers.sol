@@ -157,23 +157,27 @@ contract DynamicVar {
 contract ArrayElementAccess {
     uint256[] public numbers;
     address[] public addresses;
-    
+
     // Array setters
-    function setNumbers(uint256[] calldata _numbers) public { numbers = _numbers; }
-    function setAddresses(address[] calldata _addresses) public { addresses = _addresses; }
-    
+    function setNumbers(uint256[] calldata _numbers) public {
+        numbers = _numbers;
+    }
+
+    function setAddresses(address[] calldata _addresses) public {
+        addresses = _addresses;
+    }
+
     // Element getters (for testing partial returns)
     function getNumberAt(uint256 index) public view returns (uint256) {
         require(index < numbers.length, "Index out of bounds");
         return numbers[index];
     }
-    
+
     function getAddressAt(uint256 index) public view returns (address) {
         require(index < addresses.length, "Index out of bounds");
         return addresses[index];
     }
-    
-    
+
     // Constant arrays for testing
     function getConstantNumbers() public pure returns (uint256[] memory) {
         uint256[] memory arr = new uint256[](3);
@@ -182,7 +186,7 @@ contract ArrayElementAccess {
         arr[2] = 300;
         return arr;
     }
-    
+
     function getConstantAddresses() public pure returns (address[] memory) {
         address[] memory arr = new address[](3);
         arr[0] = address(0x1111111111111111111111111111111111111111);
@@ -190,45 +194,59 @@ contract ArrayElementAccess {
         arr[2] = address(0x3333333333333333333333333333333333333333);
         return arr;
     }
-    
+
     // Function that takes array elements as parameters
     function sumTwoNumbers(uint256 a, uint256 b) public pure returns (uint256) {
         return a + b;
     }
-    
 }
 
 contract StringAndBytesOperations {
     string public text;
     bytes public dynamicBytes;
-    
+
     // String operations
-    function setText(string calldata _text) public { text = _text; }
-    function getText() public view returns (string memory) { return text; }
-    function getTextLength() public view returns (uint256) { return bytes(text).length; }
-    
+    function setText(string calldata _text) public {
+        text = _text;
+    }
+
+    function getText() public view returns (string memory) {
+        return text;
+    }
+
+    function getTextLength() public view returns (uint256) {
+        return bytes(text).length;
+    }
+
     // Bytes operations
-    function setDynamicBytes(bytes calldata data) public { dynamicBytes = data; }
-    function getDynamicBytes() public view returns (bytes memory) { return dynamicBytes; }
-    function getBytesLength() public view returns (uint256) { return dynamicBytes.length; }
-    
+    function setDynamicBytes(bytes calldata data) public {
+        dynamicBytes = data;
+    }
+
+    function getDynamicBytes() public view returns (bytes memory) {
+        return dynamicBytes;
+    }
+
+    function getBytesLength() public view returns (uint256) {
+        return dynamicBytes.length;
+    }
+
     // String manipulation
     function concatenateStrings(string calldata a, string calldata b) public pure returns (string memory) {
         return string(abi.encodePacked(a, b));
     }
-    
+
     // Bytes manipulation
     function concatenateBytes(bytes calldata a, bytes calldata b) public pure returns (bytes memory) {
         return abi.encodePacked(a, b);
     }
-    
+
     // Constant values for testing
     function getConstantString() public pure returns (string memory) {
         return "Hello, Multicall Scripting!";
     }
-    
+
     function getConstantBytes() public pure returns (bytes memory) {
         return hex"deadbeefcafebabe1234567890abcdef";
     }
-    
 }

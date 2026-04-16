@@ -5,8 +5,7 @@ import {Test, console2} from "forge-std/Test.sol";
 import "weiroll-huff/weiroll/Planner.sol";
 import "weiroll-huff/weiroll/Weiroll.sol";
 import "weiroll-huff/weiroll/CommandBuilder.sol";
-import "./helpers/Events.sol";
-import "./helpers/Math.sol";
+import {Events, Math} from "./Helpers.sol";
 import "../src/MulticallScripter.sol";
 import "../src/CallBuilder.sol";
 

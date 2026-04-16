@@ -5,7 +5,16 @@ import {Test, console} from "forge-std/Test.sol";
 import "forge-std/StdJson.sol";
 import {CallBuilder, CallDecoder} from "src/CallBuilder.sol";
 import {MulticallScripter} from "src/MulticallScripter.sol";
-import {Math, SimpleReturn, DynamicReturn, Fuzzy, Structs, DynamicVar, ArrayElementAccess, StringAndBytesOperations} from "./Helpers.sol";
+import {
+    Math,
+    SimpleReturn,
+    DynamicReturn,
+    Fuzzy,
+    Structs,
+    DynamicVar,
+    ArrayElementAccess,
+    StringAndBytesOperations
+} from "./Helpers.sol";
 
 contract JsLibrary is Test, CallBuilder, MulticallScripter {
     MulticallScripter multicall;
@@ -398,7 +407,7 @@ contract JsLibrary is Test, CallBuilder, MulticallScripter {
         // Execute the transaction
         multicall.execute(jsTargetsArray, jsOffsetsArray, jsCalldatasArray, jsMsgValuesArray);
 
-        assertEq(stringAndBytesOps.getText(), string("Hello, Multicall Scripting!")); 
+        assertEq(stringAndBytesOps.getText(), string("Hello, Multicall Scripting!"));
     }
 
     function test_js_bytes_operations() public {
@@ -422,6 +431,4 @@ contract JsLibrary is Test, CallBuilder, MulticallScripter {
 
         assertEq(stringAndBytesOps.getDynamicBytes(), hex"deadbeefcafebabe1234567890abcdef11223344");
     }
-
-
 }
