@@ -1,0 +1,50 @@
+{
+  "comment": "Canonical source of truth for offset bit layouts. Both the Solidity assembly decoder (src/MulticallScripter.sol) and the JavaScript encoder (js/encoding.js) must match this schema exactly. When adding or modifying a flag, update this file first, then update both layers.",
+  "version": 1,
+  "field_size_bits": 256,
+  "value_offset": 248,
+  "partial_return_vars": 3,
+
+  "flags": {
+    "STATIC_CALL_FLAG":                    { "value": "0xFF", "layout": "regular", "is_readonly": true  },
+    "CALL_FLAG":                           { "value": "0xFE", "layout": "regular", "is_readonly": false },
+    "STATIC_CALL_PARTIAL_RETURN_FLAG":     { "value": "0xFC", "layout": "partial", "is_readonly": true  },
+    "CALL_PARTIAL_RETURN_FLAG":            { "value": "0xFB", "layout": "partial", "is_readonly": false },
+    "DELEGATE_CALL_FLAG":                  { "value": "0xFD", "layout": "regular", "is_readonly": false, "status": "unimplemented" }
+  },
+
+  "layouts": {
+    "regular": {
+      "comment": "Used by STATIC_CALL_FLAG (0xFF) and CALL_FLAG (0xFE). Bit layout: [8:calltype][8:valueIndex][120:memTarget][120:resultLength]",
+      "fields": [
+        { "name": "calltype",     "bits": 8,   "position": 248 },
+        { "name": "valueIndex",   "bits": 8,   "position": 240, "only_for": ["0xFE"] },
+        { "name": "memTarget",    "bits": 120, "position": 120 },
+        { "name": "resultLength", "bits": 120, "position": 0 }
+      ]
+    },
+    "partial": {
+      "comment": "Used by STATIC_CALL_PARTIAL_RETURN_FLAG (0xFC) and CALL_PARTIAL_RETURN_FLAG (0xFB). Bit layout: [8:calltype][8:valueIndex][120:memTargets(40×3)][48:resultLengths(16×3)][48:returnOffsets(16×3)][16:returnDataSize][8:num_vars]",
+      "fields": [
+        { "name": "calltype",       "bits": 8,   "position": 248 },
+        { "name": "valueIndex",     "bits": 8,   "position": 240, "only_for": ["0xFB"] },
+        { "name": "memTargets",     "bits": 40,  "position": 120, "count": 3, "pack": "MSB" },
+        { "name": "resultLengths",  "bits": 16,  "position": 72,  "count": 3, "pack": "MSB" },
+        { "name": "returnOffsets",  "bits": 16,  "position": 24,  "count": 3, "pack": "MSB" },
+        { "name": "returnDataSize", "bits": 16,  "position": 8 },
+        { "name": "num_vars",       "bits": 8,   "position": 0 }
+      ]
+    }
+  },
+
+  "field_constraints": {
+    "memTarget":    { "max_hex": "0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF", "max_dec": 1329227995784915872903807060280344575 },
+    "resultLength": { "max_hex": "0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF", "max_dec": 1329227995784915872903807060280344575 },
+    "memTargets":   { "max_hex": "0xFFFFFFFFFF", "max_dec": 1099511627775, "per_element": true },
+    "resultLengths": { "max_hex": "0xFFFF", "max_dec": 65535, "per_element": true },
+    "returnOffsets": { "max_hex": "0xFFFF", "max_dec": 65535, "per_element": true },
+    "returnDataSize": { "max_hex": "0xFFFF", "max_dec": 65535 },
+    "valueIndex":   { "max_hex": "0xFF", "max_dec": 255 },
+    "num_vars":     { "max_hex": "0x03", "max_dec": 3 }
+  }
+}

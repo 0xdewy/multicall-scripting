@@ -2,6 +2,8 @@
 pragma solidity ^0.8.28;
 
 contract Constants {
+    // GENERATED from js/offset-schema.json — the canonical source of truth for bit layouts.
+    // When adding or changing a flag, update the JSON schema first, then mirror here.
     uint256 constant PARTIAL_RETURN_VARS = 3;
     uint256 constant STATIC_CALL_FLAG = 0xFF;
     uint256 constant CALL_FLAG = 0xFE;

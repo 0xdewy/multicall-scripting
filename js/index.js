@@ -1,18 +1,32 @@
 import { encodeFunctionData, getAbiItem } from "viem";
 
-// =========================================== Constants ===========================================
-export const PARTIAL_RETURN_VARS = BigInt(3);
-export const STATIC_CALL_FLAG = BigInt(0xff);
-export const CALL_FLAG = BigInt(0xfe);
-export const DELEGATE_CALL_FLAG = BigInt(0xfd);
-export const STATIC_CALL_PARTIAL_RETURN_FLAG = BigInt(0xfc);
-export const CALL_PARTIAL_RETURN_FLAG = BigInt(0xfb);
-export const VALUE_OFFSET = BigInt(248);
+import {
+    STATIC_CALL_FLAG,
+    CALL_FLAG,
+    DELEGATE_CALL_FLAG,
+    STATIC_CALL_PARTIAL_RETURN_FLAG,
+    CALL_PARTIAL_RETURN_FLAG,
+    PARTIAL_RETURN_VARS,
+    VALUE_OFFSET,
+    staticCall,
+    stateChangingCall,
+    staticCallPartialReturn,
+    callPartialReturn,
+} from "./encoding.js";
 
-const UINT120_MAX = (1n << 120n) - 1n;
-const UINT8_MAX = BigInt(255);
-const UINT40_MAX = (1n << 40n) - 1n;
-const UINT16_MAX = (1n << 16n) - 1n;
+export {
+    STATIC_CALL_FLAG,
+    CALL_FLAG,
+    DELEGATE_CALL_FLAG,
+    STATIC_CALL_PARTIAL_RETURN_FLAG,
+    CALL_PARTIAL_RETURN_FLAG,
+    PARTIAL_RETURN_VARS,
+    VALUE_OFFSET,
+    staticCall,
+    stateChangingCall,
+    staticCallPartialReturn,
+    callPartialReturn,
+};
 
 // =========================================== Type Utilities ===========================================
 const TypeUtils = {
@@ -605,93 +619,3 @@ export class TransactionBuilder {
 }
 
 
-// ===========================================Helpers===========================================
-
-export function staticCall(memTarget, resultLength) {
-    memTarget = BigInt(memTarget);
-    resultLength = BigInt(resultLength);
-    return (STATIC_CALL_FLAG << VALUE_OFFSET) | (memTarget << BigInt(120)) | resultLength;
-}
-
-export function stateChangingCall(msgValueIndex = 0) {
-    msgValueIndex = BigInt(msgValueIndex);
-    if (msgValueIndex > UINT8_MAX) throw new Error("msgValueIndex too large");
-    return (CALL_FLAG << VALUE_OFFSET) | (msgValueIndex << BigInt(240));
-}
-
-export function staticCallPartialReturn(memTargets, resultLengths, returnOffsets, returnDataSize) {
-    returnDataSize = BigInt(returnDataSize);
-
-    if (memTargets.length > PARTIAL_RETURN_VARS || resultLengths.length > PARTIAL_RETURN_VARS || returnOffsets.length > PARTIAL_RETURN_VARS) {
-        throw new Error("invalid number of params");
-    }
-    if (returnDataSize > UINT16_MAX) {
-        throw new Error("returnDataSize is too large");
-    }
-
-    const len = memTargets.length;
-    let encodedMemTargets = BigInt(0);
-    let encodedResultLengths = BigInt(0);
-    let encodedOffsets = BigInt(0);
-
-    for (let i = 0; i < len; i++) {
-        const memTarget = BigInt(memTargets[i]);
-        const resultLength = BigInt(resultLengths[i]);
-        const returnOffset = BigInt(returnOffsets[i]);
-
-        if (memTarget > UINT40_MAX) throw new Error("memTarget value too large");
-        if (resultLength > UINT16_MAX) throw new Error("resultLength value too large");
-        if (returnOffset > UINT16_MAX) throw new Error("returnOffset value too large");
-
-        const varOffset = Number(PARTIAL_RETURN_VARS) - (i + 1);
-        encodedMemTargets |= memTarget << BigInt(varOffset * 40);
-        encodedResultLengths |= resultLength << BigInt(varOffset * 16);
-        encodedOffsets |= returnOffset << BigInt(varOffset * 16);
-    }
-
-    return (STATIC_CALL_PARTIAL_RETURN_FLAG << VALUE_OFFSET) |
-        (encodedMemTargets << BigInt(120)) |
-        (encodedResultLengths << BigInt(72)) |
-        (encodedOffsets << BigInt(24)) |
-        (returnDataSize << BigInt(8)) |
-        BigInt(len);
-}
-
-export function callPartialReturn(msgValueIndex, memTargets, resultLengths, returnOffsets, returnDataSize) {
-    msgValueIndex = BigInt(msgValueIndex);
-    returnDataSize = BigInt(returnDataSize);
-
-    if (memTargets.length > PARTIAL_RETURN_VARS || resultLengths.length > PARTIAL_RETURN_VARS || returnOffsets.length > PARTIAL_RETURN_VARS) {
-        throw new Error("invalid number of params");
-    }
-    if (msgValueIndex > UINT8_MAX) throw new Error("msgValueIndex too large");
-    if (returnDataSize > UINT16_MAX) throw new Error("returnDataSize is too large");
-
-    const len = memTargets.length;
-    let encodedMemTargets = BigInt(0);
-    let encodedResultLengths = BigInt(0);
-    let encodedOffsets = BigInt(0);
-
-    for (let i = 0; i < len; i++) {
-        const memTarget = BigInt(memTargets[i]);
-        const resultLength = BigInt(resultLengths[i]);
-        const returnOffset = BigInt(returnOffsets[i]);
-
-        if (memTarget > UINT40_MAX) throw new Error("memTarget value too large");
-        if (resultLength > UINT16_MAX) throw new Error("resultLength value too large");
-        if (returnOffset > UINT16_MAX) throw new Error("returnOffset value too large");
-
-        const varOffset = Number(PARTIAL_RETURN_VARS) - (i + 1);
-        encodedMemTargets |= memTarget << BigInt(varOffset * 40);
-        encodedResultLengths |= resultLength << BigInt(varOffset * 16);
-        encodedOffsets |= returnOffset << BigInt(varOffset * 16);
-    }
-
-    return (CALL_PARTIAL_RETURN_FLAG << VALUE_OFFSET) |
-        (msgValueIndex << BigInt(240)) |
-        (encodedMemTargets << BigInt(120)) |
-        (encodedResultLengths << BigInt(72)) |
-        (encodedOffsets << BigInt(24)) |
-        (returnDataSize << BigInt(8)) |
-        BigInt(len);
-}

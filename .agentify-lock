@@ -1,0 +1,25 @@
+{
+  "date": "2026-05-31",
+  "skill_version": "1.4.0",
+  "project_name": "multicall-scripting",
+  "project_type": "library",
+  "files_created": [
+    "CLAUDE.md",
+    ".claude/rules/solidity.md",
+    ".claude/rules/javascript.md",
+    ".claude/rules/testing.md",
+    ".claude/context-map.md",
+    "docs/OVERVIEW.md",
+    "docs/contracts.md",
+    "docs/javascript.md",
+    "docs/testing.md",
+    "docs/examples.md",
+    "docs/NAVIGATION.md",
+    "docs/plans/README.md",
+    "docs/specs/README.md",
+    "docs/reviews/README.md"
+  ],
+  "files_updated": [],
+  "files_kept": [],
+  "coordination_dirs": ["docs/plans", "docs/specs", "docs/reviews"]
+}

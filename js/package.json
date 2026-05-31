@@ -10,6 +10,8 @@
   },
   "files": [
     "index.js",
+    "encoding.js",
+    "offset-schema.json",
     "abi.js",
     "cli.js",
     "README.md"
