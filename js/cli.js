@@ -1,18 +1,8 @@
-const { TransactionBuilder } = require("./index.js");
-const fs = require("fs");
+import { fileURLToPath } from "url";
+import { TransactionBuilder } from "./index.js";
+import { loadABI } from "./abi.js";
 
-function loadABI(path) {
-  let content;
-  try {
-    content = fs.readFileSync(path, "utf8");
-  } catch {
-    content = fs.readFileSync(`./${path}`, "utf8");
-  }
-  const artifact = JSON.parse(content);
-  return Array.isArray(artifact) ? artifact : artifact.abi;
-}
-
-module.exports.addCallsAndBuild = function addCallsAndBuild(calls) {
+export function addCallsAndBuild(calls) {
   const transactionBuilder = new TransactionBuilder();
   for (const call of calls) {
     try {
@@ -24,18 +14,11 @@ module.exports.addCallsAndBuild = function addCallsAndBuild(calls) {
         throw new Error(`Function ${call.functionName} not found in ABI`);
       }
       const processedArgs = call.args.map((arg, index) => {
-        // Check if this is a partial return reference object
         if (arg && typeof arg === "object" && "callIndex" in arg && "offset" in arg && "size" in arg) {
-          // Ensure all required fields are present and are numbers
-          if (typeof arg.callIndex !== 'number' || typeof arg.offset !== 'number' || typeof arg.size !== 'number') {
+          if (typeof arg.callIndex !== "number" || typeof arg.offset !== "number" || typeof arg.size !== "number") {
             throw new Error(`Invalid partial return reference object at index ${index}`);
           }
-          // Return only the essential fields
-          return {
-            callIndex: arg.callIndex,
-            offset: arg.offset,
-            size: arg.size
-          };
+          return { callIndex: arg.callIndex, offset: arg.offset, size: arg.size };
         }
         const inputType = functionAbi.inputs[index].type;
         if (inputType.includes("int") &&
@@ -56,11 +39,11 @@ module.exports.addCallsAndBuild = function addCallsAndBuild(calls) {
         call.value ? BigInt(call.value) : 0n,
       );
     } catch (error) {
-      throw new Error(`Error processing call ${call.functionName}: ${error.message}`);
+      throw new Error(`Error processing call ${call.functionName}: ${error.message}`, { cause: error });
     }
   }
   return transactionBuilder.build();
-};
+}
 
 function main() {
   const args = process.argv.slice(2);
@@ -69,8 +52,8 @@ function main() {
     process.exit(1);
   }
   try {
-    const calls = JSON.parse(args[0], (key, value) => typeof value === "number" ? value.toString() : value);
-    const result = module.exports.addCallsAndBuild(calls);
+    const calls = JSON.parse(args[0], (_key, value) => typeof value === "number" ? value.toString() : value);
+    const result = addCallsAndBuild(calls);
     const serializableResult = {
       targets: result.targets,
       offsets: result.offsets.map((offset) => offset.toString()),
@@ -80,8 +63,10 @@ function main() {
     console.log(JSON.stringify(serializableResult));
   } catch (error) {
     process.stderr.write(`Error: ${error.message}\n`);
+    if (error.cause) process.stderr.write(`Caused by: ${error.cause.message}\n`);
     process.exit(1);
   }
 }
 
-main();
+const isMain = process.argv[1] === fileURLToPath(import.meta.url);
+if (isMain) main();

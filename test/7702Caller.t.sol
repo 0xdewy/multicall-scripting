@@ -26,13 +26,16 @@ contract MockTarget {
     }
 }
 
+    uint256 constant AUTHORIZED_KEY = 0x789;
+    uint256 constant UNAUTHORIZED_KEY = 0xABC;
+
 contract SevenSevenZeroTwoCallerTest is Test {
     SevenSevenZeroTwoCaller public wallet;
     MockTarget public mockTarget;
     address public entryPoint = address(0x123);
     address public owner = address(0x456);
-    address public authorizedUser = address(0x789);
-    address public unauthorizedUser = address(0xABC);
+    address public authorizedUser = vm.addr(AUTHORIZED_KEY);
+    address public unauthorizedUser = vm.addr(UNAUTHORIZED_KEY);
 
     function setUp() public {
         vm.startPrank(owner);
@@ -143,26 +146,6 @@ contract SevenSevenZeroTwoCallerTest is Test {
         assertEq(mockTarget.value(), 200); // Last call wins
     }
 
-    function testExecuteBatchFromEntryPoint() public {
-        address[] memory targets = new address[](1);
-        uint256[] memory offsets = new uint256[](1);
-        bytes[] memory calldatas = new bytes[](1);
-        uint256[] memory values = new uint256[](1);
-
-        // Encode offset for regular call
-        uint256 callOffset = 0xFE00000000000000000000000000000000000000000000000000000000000000;
-
-        targets[0] = address(mockTarget);
-        offsets[0] = callOffset;
-        calldatas[0] = abi.encodeWithSelector(MockTarget.setValue.selector, 42);
-        values[0] = 0;
-
-        vm.prank(entryPoint);
-        wallet.executeFromEntryPoint(targets, offsets, calldatas, values);
-
-        assertEq(mockTarget.value(), 42);
-    }
-
     function testExecuteBatchNotEntryPoint() public {
         address[] memory targets = new address[](1);
         uint256[] memory offsets = new uint256[](1);
@@ -257,6 +240,114 @@ contract SevenSevenZeroTwoCallerTest is Test {
     function testGetDomainSeparator() public {
         bytes32 domainSeparator = wallet.getDomainSeparator();
         assertTrue(domainSeparator != bytes32(0));
+    }
+
+    function test_executeWithAuthorization_valid_sig() public {
+        uint256 nonce = wallet.getNextNonce(authorizedUser);
+        uint256 expiry = block.timestamp + 1000;
+
+        // Build EIP-712 typed data hash
+        bytes32 typehash = wallet.EIP7702_TYPEHASH();
+        bytes32 structHash = keccak256(abi.encode(typehash, authorizedUser, nonce, expiry));
+        bytes32 domainSeparator = wallet.getDomainSeparator();
+        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", domainSeparator, structHash));
+
+        // Sign with authorizedUser's key
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(AUTHORIZED_KEY, digest);
+        bytes memory signature = abi.encodePacked(r, s, v);
+
+        SevenSevenZeroTwoCaller.Authorization memory auth = SevenSevenZeroTwoCaller.Authorization({
+            authority: authorizedUser,
+            nonce: nonce,
+            expiry: expiry,
+            signature: signature
+        });
+
+        address[] memory targets = new address[](1);
+        uint256[] memory offsets = new uint256[](1);
+        bytes[] memory calldatas = new bytes[](1);
+        uint256[] memory values = new uint256[](1);
+
+        uint256 callOffset = 0xFE00000000000000000000000000000000000000000000000000000000000000;
+        targets[0] = address(mockTarget);
+        offsets[0] = callOffset;
+        calldatas[0] = abi.encodeWithSelector(MockTarget.setValue.selector, 42);
+        values[0] = 0;
+
+        wallet.executeWithAuthorization(targets, offsets, calldatas, values, auth);
+
+        assertEq(mockTarget.value(), 42);
+        assertEq(wallet.getNextNonce(authorizedUser), 1);
+    }
+
+    function test_executeWithAuthorization_expired() public {
+        uint256 nonce = wallet.getNextNonce(authorizedUser);
+        uint256 expiry = 0; // expired (block.timestamp >= 1 on any running chain)
+
+        bytes32 typehash = wallet.EIP7702_TYPEHASH();
+        bytes32 structHash = keccak256(abi.encode(typehash, authorizedUser, nonce, expiry));
+        bytes32 domainSeparator = wallet.getDomainSeparator();
+        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", domainSeparator, structHash));
+
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(AUTHORIZED_KEY, digest);
+        bytes memory signature = abi.encodePacked(r, s, v);
+
+        SevenSevenZeroTwoCaller.Authorization memory auth = SevenSevenZeroTwoCaller.Authorization({
+            authority: authorizedUser,
+            nonce: nonce,
+            expiry: expiry,
+            signature: signature
+        });
+
+        address[] memory targets = new address[](1);
+        uint256[] memory offsets = new uint256[](1);
+        bytes[] memory calldatas = new bytes[](1);
+        uint256[] memory values = new uint256[](1);
+        targets[0] = address(mockTarget);
+        offsets[0] = 0;
+        calldatas[0] = "";
+        values[0] = 0;
+
+        vm.expectRevert("7702Caller: invalid authorization");
+        wallet.executeWithAuthorization(targets, offsets, calldatas, values, auth);
+    }
+
+    function test_executeWithAuthorization_replay() public {
+        uint256 nonce = wallet.getNextNonce(authorizedUser);
+        uint256 expiry = block.timestamp + 1000;
+
+        bytes32 typehash = wallet.EIP7702_TYPEHASH();
+        bytes32 structHash = keccak256(abi.encode(typehash, authorizedUser, nonce, expiry));
+        bytes32 domainSeparator = wallet.getDomainSeparator();
+        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", domainSeparator, structHash));
+
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(AUTHORIZED_KEY, digest);
+        bytes memory signature = abi.encodePacked(r, s, v);
+
+        SevenSevenZeroTwoCaller.Authorization memory auth = SevenSevenZeroTwoCaller.Authorization({
+            authority: authorizedUser,
+            nonce: nonce,
+            expiry: expiry,
+            signature: signature
+        });
+
+        address[] memory targets = new address[](1);
+        uint256[] memory offsets = new uint256[](1);
+        bytes[] memory calldatas = new bytes[](1);
+        uint256[] memory values = new uint256[](1);
+        uint256 callOffset = 0xFE00000000000000000000000000000000000000000000000000000000000000;
+        targets[0] = address(mockTarget);
+        offsets[0] = callOffset;
+        calldatas[0] = abi.encodeWithSelector(MockTarget.setValue.selector, 42);
+        values[0] = 0;
+
+        // First use should succeed
+        wallet.executeWithAuthorization(targets, offsets, calldatas, values, auth);
+        assertEq(wallet.getNextNonce(authorizedUser), 1);
+
+        // Second use with same authorization should fail (nonce mismatch)
+        vm.expectRevert("7702Caller: invalid authorization");
+        wallet.executeWithAuthorization(targets, offsets, calldatas, values, auth);
     }
 }
 

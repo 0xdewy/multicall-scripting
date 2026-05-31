@@ -1,282 +1,166 @@
-# Multicall Scripting: Atomic Execution with Return Value Chaining
+# multicall-scripting
 
 [![License: GPL3](https://img.shields.io/badge/License-GPL3-blue.svg)](LICENSE)
 [![Solidity](https://img.shields.io/badge/Solidity-^0.8.28-363636?logo=solidity)](https://soliditylang.org/)
-[![JavaScript](https://img.shields.io/badge/JavaScript-ES6+-F7DF1E?logo=javascript)](https://developer.mozilla.org/en-US/docs/Web/JavaScript)
 [![Foundry](https://img.shields.io/badge/Built%20with-Foundry-FF6C37?logo=ethereum)](https://getfoundry.sh/)
 
-**Execute complex multi-contract strategies in a single atomic transaction with full return value chaining between calls.**
+Execute complex multi-contract strategies in a single atomic transaction with full return value chaining between calls.
 
-## 🚀 The Problem: Beyond Basic Multicall
+## The problem
 
-Regular multicall solutions (like Multicall3) only batch independent calls. They can't use return values from one call as inputs to another within the same transaction. This forces developers to either:
+Regular multicall (like Multicall3) only batches independent calls — it can't use the return value from one call as an argument to the next within the same transaction. The usual workarounds are writing a custom contract per strategy, or splitting into multiple transactions. Both approaches add friction and break atomicity.
 
-**Multicall Scripting solves this** by enabling true return value chaining within a single atomic execution.
+Multicall Scripting solves this by precalculating memory offsets offchain and using the `mcopy` opcode to copy return data directly into subsequent call arguments at execution time.
 
-## 🏗️ Technical Architecture
+## Components
 
-### How It Works: Memory-Based Return Value Chaining
+- **`MulticallScripter.sol`** — core execution contract. Accepts a batch of calls with encoded offset metadata and runs them in sequence, writing return data to the locations specified by the offsets.
+- **`CallBuilder.sol`** — Solidity DSL for building call chains in tests.
+- **`TransactionBuilder` (JS)** — builds the call batch, encodes offsets, and returns ABI-encoded arguments ready for `execute()`.
+- **Descriptors** — proxy objects returned by `addCall()`. Pass them as arguments to subsequent calls to express data dependencies.
 
-Adds scripting to multicall by precalculating memory offsets offchain. The contract executes calls with return data automatically placed for future calls, enabling chaining with minimal overhead.
-
-### Core Components
-
-1. **`MulticallScripter.sol`**: Core contract that executes chained calls with memory copying
-2. **`CallBuilder.sol`**: Solidity DSL for building chained calls in tests  
-3. **`TransactionBuilder` (JavaScript)**: Type-safe builder for complex transactions
-4. **Descriptors**: Proxy objects that represent future return values
-
-### Offset Data Layout
-
-The system uses compact 256-bit offset encoding to specify how return data should be handled:
-
-#### Regular Calls (StaticCall and StateChangingCall)
-
-| Bits | Field | Description |
-|------|-------|-------------|
-| 8 | `calltype` | `0xFF` for static call, `0xFE` for regular call |
-| 120 | `memTarget/returnOffset` | Memory offset where return data should be stored |
-| 120 | `resultLength/returnSize` | Size of return data to copy |
-
-#### Partial Return Calls (`STATIC_CALL_PARTIAL_RETURN_FLAG = 0xFC`)
-
-| Bits | Field | Description |
-|------|-------|-------------|
-| 8 | `calltype` | `0xFC` for static call with partial return |
-| 8 | `valueIndex` | Index into values array for msg.value (0 if no value) |
-| 120 | `memTargets` (40×3) | Array of 3 memory targets where variables should be copied |
-| 48 | `resultLengths` (16×3) | Array of 3 lengths of variables to copy |
-| 48 | `returnOffsets` (16×3) | Array of 3 offsets from beginning of return data |
-| 16 | `returnDataSize` | Total length of return data (max 65535 bytes) |
-| 8 | `num_vars` | Number of variable segments to use (0-3) |
-
-## ⚡ Quick Start
-
-### Installation
+## Quick start
 
 ```bash
-# Clone the repository
-git clone https://github.com/0xdewy/multicall-scripting/
+git clone https://github.com/0xdewy/multicall-scripting
 cd multicall-scripting
 
-# Install JavaScript library
+# JS library
 cd js && bun install
 
-# Install Foundry (for Solidity development)
-curl -L https://foundry.paradigm.xyz | bash
-foundryup
+# Solidity (requires Foundry)
+curl -L https://foundry.paradigm.xyz | bash && foundryup
+forge install
 ```
 
-### Basic Example: ERC20 Balance → Transfer
+### Read a balance, then transfer it
 
 ```javascript
-const { TransactionBuilder } = require("./js/index.js");
+import { TransactionBuilder } from "./js/index.js";
 
 const builder = new TransactionBuilder();
 
-// Get token balance - returns a virtual output for the return value
-const balance = builder.addCall(
-  ERC20_ABI,
-  tokenAddress,
-  "balanceOf",
-  [userAddress],
-  0n  // msg.value
-);
+// addCall returns a descriptor for the return value
+const balance = builder.addCall(ERC20_ABI, tokenAddress, "balanceOf", [userAddress]);
 
-// Transfer exact balance using the virtual output as input
-builder.addCall(
-  ERC20_ABI,
-  tokenAddress,
-  "transfer",
-  [recipientAddress, balance],  // balance descriptor used as amount
-  0n
-);
+// pass the descriptor as an argument — the actual value is wired at execution time
+builder.addCall(ERC20_ABI, tokenAddress, "transfer", [recipientAddress, balance]);
 
-// Build and execute
 const { targets, offsets, calldatas, msgValues } = builder.build();
 await multicallScripter.execute(targets, offsets, calldatas, msgValues);
 ```
 
-## 🎯 Real-World Use Cases
-
-### DeFi Strategy: Cross-Protocol Yield Farming
+### Struct field access
 
 ```javascript
-// 1. Check Curve LP token balance
-const curveLpBalance = builder.addCall(CURVE_ABI, curvePool, "balanceOf", [user]);
+// getUser() returns a struct; access its fields directly as descriptors
+const user = builder.addCall(aaveABI, pool, "getUserAccountData", [userAddress]);
 
-// 2. Withdraw from Curve
-const withdrawnTokens = builder.addCall(
-  CURVE_ABI, 
-  curvePool, 
-  "remove_liquidity_one_coin",
-  [curveLpBalance, 0, 0] // 0 = min amount placeholder
-);
-
-// 3. Deposit to Aave
-builder.addCall(
-  AAVE_ABI,
-  aavePool,
-  "deposit",
-  [usdcAddress, withdrawnTokens, user, 0]
-);
-
-// 4. Borrow against collateral
-const borrowable = builder.addCall(
-  AAVE_ABI,
-  aavePool,
-  "getUserAccountData",
-  [user]
-);
-
-builder.addCall(
-  AAVE_ABI,
-  aavePool,
-  "borrow",
-  [daiAddress, borrowable.availableBorrowsETH, 2, 0, user]
-);
-```
-
-## 🔧 API Reference
-
-### JavaScript: `TransactionBuilder`
-
-```javascript
-class TransactionBuilder {
-  /**
-   * Add a call to the sequence
-   * @param {Array} abi - Contract ABI
-   * @param {string} target - Contract address
-   * @param {string} functionName - Function to call
-   * @param {Array} args - Arguments (can include descriptors)
-   * @param {bigint} msgValue - Ether to send (0n for static calls)
-   * @returns {object|Array} - Descriptor(s) for return values
-   */
-  addCall(abi, target, functionName, args, msgValue = 0n)
-  
-  /**
-   * Build the transaction for execution
-   * @returns {object} - { targets, offsets, calldatas, msgValues }
-   */
-  build()
-}
-
-```
-
-### Solidity: `CallBuilder` System
-
-```solidity
-// Core chaining functions
-function useCallOutput(VarLib.Var memory returnData, VarLib.Var memory callParameter)
-function useCallOutput(uint256 returnCallIndex, uint256 callParameterIndex)
-
-// Position helpers: For simple types
-function first(uint256 callIndex) returns (Var memory)   // First return value
-function second(uint256 callIndex) returns (Var memory)  // Second return value  
-function third(uint256 callIndex) returns (Var memory)   // Third return value
-function withMemRange(uint256 callIndex, uint256 start, uint256 length) returns (Var memory)
-
-// Call creation
-function call_static(address target, bytes memory data) returns (uint256 callIndex)
-function call(address target, bytes memory data, uint256 value) returns (uint256 callIndex)
-function call(address target, bytes memory data) returns (uint256 callIndex)
-```
-
-## 🧠 Advanced Features
-
-### Dynamic Type Support
-
-Basic dynamic type support with length specification:
-
-```javascript
-// Strings
-const text = builder.addCall(abi, target, "getString", []);
-text.with_length(24); // Must specify expected length
-builder.addCall(abi, target, "setText", [text]);
-
-// Bytes
-const data = builder.addCall(abi, target, "getBytes", []);
-data.with_length(32);
-builder.addCall(abi, target, "processData", [data]);
-
-// Arrays
-const addresses = builder.addCall(abi, target, "getAddresses", []);
-addresses.with_length(3);
-builder.addCall(abi, target, "processList", [addresses]);
-
-// Structs
-const userData = builder.addCall(abi, target, "getUser", []);
-builder.addCall(abi, target, "updateUser", [
-  userData.balance,    // Access struct fields
-  userData.timestamp,
+builder.addCall(aaveABI, pool, "borrow", [
+  daiAddress,
+  user.availableBorrowsBase,
+  2,
+  0,
+  userAddress,
 ]);
 ```
 
-Note: The library needs to be able to predetermine memory locations for all data so it cannot handle dynamic types that also have dynamic memory offsets. 
+### Dynamic types
 
-## ⚠️ Limitations & Considerations
+Dynamic types (strings, bytes, dynamic arrays) require calling `.with_length(n)` before use so the builder can calculate the memory layout:
 
-### Technical Constraints
+```javascript
+const text = builder.addCall(abi, target, "getName", []);
+text.with_length(24); // expected byte length of the returned string
 
-1. **Maximum 3 variables per call** due to 256-bit encoding space
-2. **Dynamic types require length specification** via `.with_length()` before use
-3. **No return data reuse** - each return value can only be used once
-4. **Memory offset limits** - `memTargets` are 40-bit offsets, `resultLengths` and `returnOffsets` are 16-bit values
-5. **Return data size limit** - `returnDataSize` supports up to 65535 bytes
-
-### ⚠️ Security Warning
-This repository has not been audited and prioritizes efficiency over safety. For experimental use only. Reach out if you want to collaborate on an audit.
-
-## 📚 Further Reading
-
-### Architecture Deep Dive
-- [Memory Copy Mechanism](./src/MulticallScripter.sol#L134-L156) - How `mcopy` enables chaining
-- [Descriptor System](./js/index.js#L60-L116) - JavaScript proxy implementation
-- [ABI Encoding Handling](./js/index.js#L333-R397) - Dynamic type support
-
-### Example Implementations
-- [DeFi Strategy Examples](./js/examples/multiple_swaps.js) - Complete DeFi workflows
-- [Foundry Test Suite](./test/) - Comprehensive test patterns
-- [JavaScript Library](./js/index.js) - Full API implementation
-
-### Related Projects
-- [Multicall3](https://github.com/mds1/multicall) - Basic call batching
-- [Weiroll](https://github.com/weiroll/weiroll) - Advanced VM scripting
-
-## 🤝 Contributing
-
-Contributions are welcome!
-
-### Development Setup
-
-```bash
-# 1. Clone and install
-git clone https://github.com/0xdewy/multicall-scripting
-cd multicall-scripting
-
-# 2. Set up development environment
-cd js && bun install
-cd .. && forge install
-
-# 3. Run tests
-forge test -vv
-cd js && bun test
-
-# 4. Build examples
-cd js/examples && bun run multiple_swaps.js
+builder.addCall(abi, target, "setName", [text]);
 ```
 
-### Roadmap
-- [ ] Version that returns data for static call support
-- [ ] Additional DSLs (Python, Rust)
-- [ ] Formal verification of memory safety
+Array elements can be accessed by index after `.with_length()`:
 
-## 📄 License
+```javascript
+const addresses = builder.addCall(abi, target, "getOwners", []);
+addresses.with_length(3);
 
-GPL-3.0 - See [LICENSE](LICENSE) for details.
+builder.addCall(abi, target, "transfer", [addresses[0], amount]);
+```
 
----
+## How it works
 
-**Multicall Scripting** enables truly atomic multi-contract execution. Whether you're building complex DeFi strategies, NFT minting pipelines, or cross-protocol integrations, it provides the foundation for gas-efficient composability.
+The JavaScript builder tracks a virtual memory layout as you add calls. When you pass a descriptor as an argument, the builder records where in memory the source call's return data should land and what slice of the destination call's calldata it should overwrite. This produces a compact 256-bit offset per call that encodes the copy instructions.
 
-*Made with ❤️ by [0xdewy](https://github.com/0xdewy) *
+At execution time, `MulticallScripter.execute()` copies all calldata into memory up front, then executes each call in order. After each static call, it copies the specified slices of return data to the specified memory locations (into the calldata of later calls) using `mcopy`. State-changing calls use the same layout but don't support output chaining yet.
+
+## API
+
+### `TransactionBuilder`
+
+```javascript
+import { TransactionBuilder } from "multicall-scripter";
+
+const builder = new TransactionBuilder();
+```
+
+**`addCall(abi, target, functionName, args, msgValue = 0n)`**
+
+Adds a call to the sequence. Returns a descriptor (or object of descriptors for structs, or array-like proxy for dynamic arrays) representing the call's return value. Descriptors can be passed as arguments to subsequent `addCall()` invocations.
+
+**`build()`**
+
+Returns `{ targets, offsets, calldatas, msgValues }` — the four arrays expected by `MulticallScripter.execute()`.
+
+### Offset data layout
+
+Each offset is a 256-bit value encoding the call type and copy instructions.
+
+**Static call / state-changing call:**
+
+| Bits | Field | Description |
+|------|-------|-------------|
+| 8 | `calltype` | `0xFF` static, `0xFE` regular call |
+| 120 | `memTarget` | Memory offset where return data is written |
+| 120 | `resultLength` | Bytes of return data to copy |
+
+**Partial return (`0xFC`)** — used when a call produces multiple distinct output slots:
+
+| Bits | Field | Description |
+|------|-------|-------------|
+| 8 | `calltype` | `0xFC` |
+| 8 | `valueIndex` | Index into values array for msg.value |
+| 120 | `memTargets` (40×3) | Destination offsets for up to 3 variables |
+| 48 | `resultLengths` (16×3) | Byte lengths for each variable |
+| 48 | `returnOffsets` (16×3) | Source offsets within the return data |
+| 16 | `returnDataSize` | Total return data size (max 65535 bytes) |
+| 8 | `num_vars` | Number of variable slots used |
+
+## Limitations
+
+- **Max 3 variables per call** — the partial return encoding uses 248 bits for three 40+16+16 bit triplets.
+- **Dynamic types require `.with_length(n)`** — the builder needs to know the byte length up front to calculate memory positions.
+- **Each return value can only be used once** — passing the same descriptor to two different calls throws.
+- **Return values from state-changing calls cannot be chained** — only static calls support the partial return mechanism.
+- **Return data size capped at 65535 bytes** — the `returnDataSize` field is 16 bits.
+- **Requires Cancun or later** — the contract uses the `mcopy` opcode (EIP-5656).
+
+## Running tests
+
+```bash
+# Solidity
+forge test -vv
+
+# JavaScript
+cd js && bun test
+```
+
+## Security
+
+This repository has not been audited. See [AUDIT.md](AUDIT.md) for a self-assessment of known issues. Not suitable for production use without independent review.
+
+## Related projects
+
+- [Multicall3](https://github.com/mds1/multicall) — standard call batching without return-value chaining
+- [Weiroll](https://github.com/weiroll/weiroll) — a more complete scripting VM for EVM
+
+## License
+
+GPL-3.0 — see [LICENSE](LICENSE).

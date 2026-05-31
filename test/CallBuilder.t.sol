@@ -5,7 +5,7 @@ import {Test, console2} from "forge-std/Test.sol";
 import {CallBuilder, Scripter, VarLib} from "src/CallBuilder.sol";
 import {MulticallScripter} from "src/MulticallScripter.sol";
 import {IERC20} from "forge-std/interfaces/IERC20.sol";
-import {Math} from "./Helpers.sol";
+import {Math, DynamicReturn, SimpleReturn} from "./Helpers.sol";
 import {UniV2, IUniswapV2Pair, IMulticall3} from "./Ecosystem.sol";
 
 contract MulticallScriptTest is Test, CallBuilder, MulticallScripter, UniV2 {
@@ -15,6 +15,8 @@ contract MulticallScriptTest is Test, CallBuilder, MulticallScripter, UniV2 {
     MulticallScripter multicall;
     Scripter scripter;
     Math math;
+    DynamicReturn dynamicReturn;
+    SimpleReturn simpleReturn;
 
     address constant WETH = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
     address constant DAI = 0x6B175474E89094C44Da98b954EedeAC495271d0F;
@@ -27,6 +29,8 @@ contract MulticallScriptTest is Test, CallBuilder, MulticallScripter, UniV2 {
         multicall = new MulticallScripter();
         scripter = new Scripter();
         math = new Math();
+        dynamicReturn = new DynamicReturn();
+        simpleReturn = new SimpleReturn();
         vm.deal(address(this), ETH_START_BALANCE);
         vm.deal(address(scripter), ETH_START_BALANCE);
     }
@@ -50,7 +54,74 @@ contract MulticallScriptTest is Test, CallBuilder, MulticallScripter, UniV2 {
         assertEq(math.number(), 6);
     }
 
-    // TODO: test partial return
+    // getTupleConstant() -> (1, 2, 3); use the SECOND element (start=0x20) to set math number
+    // This exercises the staticCallPartialReturn path (non-zero returnData.start).
+    function test_partial_return_second_var() public {
+        uint256 get_call = scripter.call_static(
+            address(dynamicReturn), abi.encodeWithSelector(DynamicReturn.getTupleConstant.selector)
+        );
+        uint256 set_call = scripter.call(address(math), abi.encodeWithSelector(Math.setNum.selector, 0), 0);
+        // take the second tuple element (offset 0x20) and put it at the first param of setNum
+        scripter.useCallOutput(get_call.second(), set_call.first());
+
+        (address[] memory targets, uint256[] memory offsets, bytes[] memory calldatas, uint256[] memory values) =
+            scripter.build();
+        multicall.execute(targets, offsets, calldatas, values);
+
+        assertEq(math.number(), 2);
+    }
+
+    // getTupleConstant() -> (1, 2, 3); use elements 1 and 3 (skip 2) to set a tuple
+    // Two non-contiguous vars triggers staticCallPartialReturn with multiple variables.
+    function test_partial_return_multiple_vars() public {
+        // setTuple(max, max, max)
+        scripter.call(
+            address(dynamicReturn),
+            abi.encodeWithSelector(
+                DynamicReturn.setTuple.selector, type(uint256).max, type(uint256).max, type(uint256).max
+            ),
+            0
+        );
+
+        // getTupleConstant() -> (1, 2, 3); select elements at offsets 0 and 0x40
+        uint256 get_call = scripter.call_static(
+            address(dynamicReturn), abi.encodeWithSelector(DynamicReturn.getTupleConstant.selector)
+        );
+
+        // setTuple(0, max, 0) — placeholders for elements 1 and 3
+        uint256 set_call = scripter.call(
+            address(dynamicReturn),
+            abi.encodeWithSelector(DynamicReturn.setTuple.selector, uint256(0), type(uint256).max, uint256(0)),
+            0
+        );
+
+        scripter.useCallOutput(get_call.first(), set_call.first());   // element 1 -> param 1
+        scripter.useCallOutput(get_call.third(), set_call.third());   // element 3 -> param 3
+
+        (address[] memory targets, uint256[] memory offsets, bytes[] memory calldatas, uint256[] memory values) =
+            scripter.build();
+        multicall.execute(targets, offsets, calldatas, values);
+
+        (uint256 a, uint256 b, uint256 c) = dynamicReturn.tuple();
+        assertEq(a, 1);
+        assertEq(b, type(uint256).max);
+        assertEq(c, 3);
+    }
+
+    // simpleReturn.setUint(42) → returns 42 (state-changing, 0xFB path) → math.setNum(<42>)
+    function test_state_changing_partial_return() public {
+        uint256 set_call = scripter.call(
+            address(simpleReturn), abi.encodeWithSelector(SimpleReturn.setUint.selector, uint256(42)), 0
+        );
+        uint256 use_call = scripter.call(address(math), abi.encodeWithSelector(Math.setNum.selector, uint256(0)), 0);
+        scripter.useCallOutput(set_call.first(), use_call.first());
+
+        (address[] memory targets, uint256[] memory offsets, bytes[] memory calldatas, uint256[] memory values) =
+            scripter.build();
+        multicall.execute(targets, offsets, calldatas, values);
+
+        assertEq(math.number(), 42);
+    }
 
     // swap on v2 directly, using multicall scripter
     // weth.deposit() -> weth.transfer(univ2, amt) -> univ2.swap();
@@ -103,6 +174,6 @@ contract MulticallScriptTest is Test, CallBuilder, MulticallScripter, UniV2 {
         console2.log("gas used: ", gasBefore - gasleft());
     }
 
-    receive() external payable {}
+    receive() external payable override {}
 }
 

@@ -14,9 +14,6 @@ contract SevenSevenZeroTwoCaller is MulticallScripter {
     bytes32 public constant EIP7702_TYPEHASH =
         keccak256("EIP7702Authorization(address authority,uint256 nonce,uint256 expiry)");
 
-    // Domain separator for EIP-712
-    bytes32 public DOMAIN_SEPARATOR;
-
     // Struct for EIP-7702 authorization
     struct Authorization {
         address authority;
@@ -48,14 +45,28 @@ contract SevenSevenZeroTwoCaller is MulticallScripter {
     );
 
     /**
-     * @dev Constructor sets up the domain separator
+     * @dev Constructor sets the entry point and authorizes the deployer as an initial signer.
      * @param _entryPoint The ERC-4337 entry point address
      */
     constructor(address _entryPoint) {
         entryPoint = _entryPoint;
 
-        // Set up EIP-712 domain separator
-        DOMAIN_SEPARATOR = keccak256(
+        // Owner is initially authorized
+        authorizedSigners[msg.sender] = true;
+        emit SignerAdded(msg.sender);
+    }
+
+    /**
+     * @dev EIP-712 domain separator computed dynamically so that it reflects address(this) at
+     * call time rather than at deploy time. This is critical for EIP-7702 use: when an EOA
+     * delegates to this implementation, address(this) is the EOA, not the implementation
+     * contract. A static constructor-computed separator would use the implementation address
+     * and fail to verify signatures produced for the EOA.
+     *
+     * Dynamic computation also handles post-fork chainId changes automatically.
+     */
+    function _domainSeparator() internal view returns (bytes32) {
+        return keccak256(
             abi.encode(
                 keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
                 keccak256("7702Caller"),
@@ -64,10 +75,6 @@ contract SevenSevenZeroTwoCaller is MulticallScripter {
                 address(this)
             )
         );
-
-        // Owner is initially authorized
-        authorizedSigners[msg.sender] = true;
-        emit SignerAdded(msg.sender);
     }
 
     /**
@@ -142,7 +149,7 @@ contract SevenSevenZeroTwoCaller is MulticallScripter {
         bytes32 digest = keccak256(
             abi.encodePacked(
                 "\x19\x01",
-                DOMAIN_SEPARATOR,
+                _domainSeparator(),
                 keccak256(
                     abi.encode(EIP7702_TYPEHASH, authorization.authority, authorization.nonce, authorization.expiry)
                 )
@@ -150,7 +157,7 @@ contract SevenSevenZeroTwoCaller is MulticallScripter {
         );
 
         address recovered = recover(digest, authorization.signature);
-        return recovered == authorization.authority && authorizedSigners[authorization.authority];
+        return recovered == authorization.authority;
     }
 
     /**
@@ -174,10 +181,10 @@ contract SevenSevenZeroTwoCaller is MulticallScripter {
         // Increment nonce to prevent replay
         nonces[authorization.authority]++;
 
-        // Execute the batch
-        execute(targets, offsets, calldatas, values);
-
         emit Executed(authorization.authority, targets, offsets, calldatas, values, abi.encode(authorization));
+
+        // Execute the batch (bypass the onlyEntryPointOrAuthorized modifier since authorization is already verified)
+        MulticallScripter.execute(targets, offsets, calldatas, values);
     }
 
     /**
@@ -196,52 +203,8 @@ contract SevenSevenZeroTwoCaller is MulticallScripter {
         super.execute(targets, offsets, calldatas, values);
     }
 
-    /**
-     * @dev ERC-4337 validateUserOp function
-     * @param userOp The user operation
-     * @param userOpHash Hash of the user operation
-     * @param missingAccountFunds Funds needed to be deposited
-     * @return validationData Validation data
-     */
-    function validateUserOp(bytes calldata userOp, bytes32 userOpHash, uint256 missingAccountFunds)
-        external
-        returns (uint256 validationData)
-    {
-        require(msg.sender == entryPoint, "7702Caller: not entry point");
-
-        // For simplicity, we accept all user ops from authorized signers
-        // In production, you would verify signatures and implement proper validation
-
-        if (missingAccountFunds > 0) {
-            // Deposit missing funds to entry point
-            (bool success,) = payable(entryPoint).call{value: missingAccountFunds}("");
-            require(success, "7702Caller: failed to deposit");
-        }
-
-        return 0; // No aggregator, no validAfter/validUntil
-    }
-
-    /**
-     * @dev Execute a batch from ERC-4337 entry point
-     * @param targets Array of target addresses
-     * @param offsets Array of encoded call parameters
-     * @param calldatas Array of calldata for each call
-     * @param values Array of msg.values for each call
-     */
-    function executeFromEntryPoint(
-        address[] calldata targets,
-        uint256[] calldata offsets,
-        bytes[] calldata calldatas,
-        uint256[] calldata values
-    ) external payable {
-        require(msg.sender == entryPoint, "7702Caller: not entry point");
-        execute(targets, offsets, calldatas, values);
-    }
-
-    /**
-     * @dev Receive function to accept ETH
-     */
-    receive() external payable {}
+    // SevenSevenZeroTwoCaller is a smart wallet and intentionally accepts ETH.
+    receive() external payable override {}
 
     /**
      * @dev Withdraw ETH from the wallet
@@ -305,7 +268,9 @@ contract SevenSevenZeroTwoCaller is MulticallScripter {
 
         require(v == 27 || v == 28, "7702Caller: invalid signature v value");
 
-        return ecrecover(hash, v, r, s);
+        address recovered = ecrecover(hash, v, r, s);
+        require(recovered != address(0), "7702Caller: invalid signature");
+        return recovered;
     }
 
     /**
@@ -327,10 +292,10 @@ contract SevenSevenZeroTwoCaller is MulticallScripter {
     }
 
     /**
-     * @dev Get domain separator
-     * @return The domain separator
+     * @dev Get the current EIP-712 domain separator for this address.
+     * Returns different values depending on the calling context (EOA vs implementation).
      */
     function getDomainSeparator() external view returns (bytes32) {
-        return DOMAIN_SEPARATOR;
+        return _domainSeparator();
     }
 }

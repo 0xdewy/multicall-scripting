@@ -104,8 +104,43 @@ contract CallBuilder is Constants {
             encodedOffsets |= (returnOffsets[i] << (varOffset * 16));
         }
 
-        // TODO: handle for msg.value as well
         offsets = (STATIC_CALL_PARTIAL_RETURN_FLAG << 248) | (0x00 << 240) | encodedMemTargets << 120
+            | (encodedResultLengths << 72) | (encodedOffsets << 24) | (returnLength << 8) | len;
+    }
+
+    // Same layout as staticCallPartialReturn but uses call() with optional msg.value.
+    function callPartialReturn(
+        uint256 msgValueIndex,
+        uint256[] memory memTargets,
+        uint256[] memory resultLengths,
+        uint256[] memory returnOffsets,
+        uint256 returnLength
+    ) internal pure returns (uint256 offsets) {
+        require(
+            memTargets.length <= PARTIAL_RETURN_VARS && resultLengths.length <= PARTIAL_RETURN_VARS
+                && returnOffsets.length <= PARTIAL_RETURN_VARS,
+            "invalid number of params"
+        );
+        require(msgValueIndex <= type(uint8).max, "msgValueIndex too large");
+        require(returnLength <= type(uint16).max, "returnLength is too large");
+
+        uint256 len = memTargets.length;
+        uint256 encodedMemTargets = 0x0;
+        uint256 encodedResultLengths = 0x0;
+        uint256 encodedOffsets = 0x0;
+
+        for (uint256 i = 0; i < len; i++) {
+            require(memTargets[i] <= type(uint40).max, "memTarget value too large");
+            require(resultLengths[i] <= type(uint16).max, "resultLength value too large");
+            require(returnOffsets[i] <= type(uint16).max, "returnOffset value too large");
+
+            uint256 varOffset = (PARTIAL_RETURN_VARS - (i + 1));
+            encodedMemTargets |= (memTargets[i] << (varOffset * 40));
+            encodedResultLengths |= (resultLengths[i] << (varOffset * 16));
+            encodedOffsets |= (returnOffsets[i] << (varOffset * 16));
+        }
+
+        offsets = (CALL_PARTIAL_RETURN_FLAG << 248) | (msgValueIndex << 240) | encodedMemTargets << 120
             | (encodedResultLengths << 72) | (encodedOffsets << 24) | (returnLength << 8) | len;
     }
 }
@@ -151,7 +186,6 @@ contract Scripter is CallBuilder {
         uint256[] returnDataLens; // Length of return data
         uint256[] returnDataOffsets;
         uint256 msgValue;
-        bool special;
     }
 
     // Storage array to hold all calls
@@ -164,7 +198,7 @@ contract Scripter is CallBuilder {
         returns (uint256)
     {
         uint256[] memory empty = new uint256[](0);
-        calls.push(Call(target, callData, callType, free_mem, empty, empty, empty, value, false));
+        calls.push(Call(target, callData, callType, free_mem, empty, empty, empty, value));
         free_mem += callData.length;
         return calls.length - 1;
     }
@@ -183,9 +217,6 @@ contract Scripter is CallBuilder {
         Call storage this_call = calls[callParameter.callIndex];
         Call storage old_call = calls[returnData.callIndex];
 
-        // TODO: handle special return types
-        bool is_special = (returnData.start != 0x0) || (old_call.memTargets.length > 0) || old_call.special;
-
         // memTarget is an offset -- how many bytes forward is this return data required to be set
         uint256 memTarget =
             (this_call.memPos + callParameter.start + 0x4) - (old_call.memPos + old_call.fnCalldata.length);
@@ -193,10 +224,8 @@ contract Scripter is CallBuilder {
         old_call.memTargets.push(memTarget);
         old_call.returnDataLens.push(callParameter.length);
         old_call.returnDataOffsets.push(returnData.start);
-        old_call.special = is_special;
     }
 
-    // TODO: handle special return types
     function build()
         external
         returns (address[] memory targets, uint256[] memory offsets, bytes[] memory datas, uint256[] memory values)
@@ -213,23 +242,40 @@ contract Scripter is CallBuilder {
             targets[i] = _call.target;
             datas[i] = _call.fnCalldata;
 
-            if (_call.special) {
-                require(
-                    _call.calltype_flag == STATIC_CALL_FLAG && _call.memTargets.length > 0
-                        && _call.returnDataLens.length > 0,
-                    "Invalid special call"
-                );
-            }
-
-            uint256 memTarget = _call.memTargets.length > 0 ? _call.memTargets[0] : 0;
-            uint256 returnData = _call.returnDataLens.length > 0 ? _call.returnDataLens[0] : 0;
-
             if (_call.calltype_flag == STATIC_CALL_FLAG) {
-                offsets[i] = staticCall(memTarget, returnData);
+                if (_call.memTargets.length == 0) {
+                    offsets[i] = staticCall(0, 0);
+                } else if (_call.memTargets.length == 1 && _call.returnDataOffsets[0] == 0x0) {
+                    // simple path: take first N bytes of return data and copy to memTarget
+                    offsets[i] = staticCall(_call.memTargets[0], _call.returnDataLens[0]);
+                } else {
+                    // partial return path: select up to 3 variables at arbitrary offsets
+                    uint256 returnDataSize = 0;
+                    for (uint256 j = 0; j < _call.returnDataOffsets.length; j++) {
+                        uint256 end = _call.returnDataOffsets[j] + _call.returnDataLens[j];
+                        if (end > returnDataSize) returnDataSize = end;
+                    }
+                    offsets[i] = staticCallPartialReturn(
+                        _call.memTargets, _call.returnDataLens, _call.returnDataOffsets, returnDataSize
+                    );
+                }
             } else if (_call.calltype_flag == CALL_FLAG) {
-                require(!_call.special, "not yet supported");
-                uint256 msgValue = _call.msgValue > 0 ? values_iter + 1 : 0;
-                if (_call.msgValue > 0) {
+                if (_call.memTargets.length > 0) {
+                    uint256 returnDataSize = 0;
+                    for (uint256 j = 0; j < _call.returnDataOffsets.length; j++) {
+                        uint256 end = _call.returnDataOffsets[j] + _call.returnDataLens[j];
+                        if (end > returnDataSize) returnDataSize = end;
+                    }
+                    uint256 msgValueIndex = 0;
+                    if (_call.msgValue > 0) {
+                        msgValueIndex = values_iter + 1;
+                        values[values_iter] = _call.msgValue;
+                        values_iter++;
+                    }
+                    offsets[i] = callPartialReturn(
+                        msgValueIndex, _call.memTargets, _call.returnDataLens, _call.returnDataOffsets, returnDataSize
+                    );
+                } else if (_call.msgValue > 0) {
                     offsets[i] = stateChangingCall(values_iter + 1);
                     values[values_iter] = _call.msgValue;
                     values_iter++;
@@ -243,6 +289,6 @@ contract Scripter is CallBuilder {
         assembly {
             mstore(values, values_iter)
         }
-        assert(values.length == values_iter || values_iter <= len);
+        assert(values_iter <= len);
     }
 }

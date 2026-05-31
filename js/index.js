@@ -6,12 +6,13 @@ export const STATIC_CALL_FLAG = BigInt(0xff);
 export const CALL_FLAG = BigInt(0xfe);
 export const DELEGATE_CALL_FLAG = BigInt(0xfd);
 export const STATIC_CALL_PARTIAL_RETURN_FLAG = BigInt(0xfc);
+export const CALL_PARTIAL_RETURN_FLAG = BigInt(0xfb);
 export const VALUE_OFFSET = BigInt(248);
 
-const UINT120_MAX = BigInt(2 ** 120 - 1);
+const UINT120_MAX = (1n << 120n) - 1n;
 const UINT8_MAX = BigInt(255);
-const UINT40_MAX = BigInt(2 ** 40 - 1);
-const UINT16_MAX = BigInt(2 ** 16 - 1);
+const UINT40_MAX = (1n << 40n) - 1n;
+const UINT16_MAX = (1n << 16n) - 1n;
 
 // =========================================== Type Utilities ===========================================
 const TypeUtils = {
@@ -93,7 +94,7 @@ const DescriptorUtils = {
     },
     
     setupDynamicDescriptor(descriptor, n) {
-        if (n <= 0) throw new Error(`${descriptor.type} length must be positive`);
+        if (n <= 0) throw new Error(`${descriptor.type} length must be positive`, { cause: new Error("invalid length") });
         descriptor.length = n;
         descriptor.requiresLength = false;
         
@@ -126,7 +127,6 @@ const DescriptorUtils = {
 export class TransactionBuilder {
     constructor() {
         this.calls = [];
-        this.freeMemory = 0;
         this.usedDescriptors = new Set();
     }
 
@@ -400,14 +400,12 @@ export class TransactionBuilder {
                     : `${descriptor.callIndex}:${descriptor.offset}:${descriptor.size}`;
                 
                 if (this.usedDescriptors.has(descriptorId)) {
-                    throw new Error(`Output variable from call ${descriptor.callIndex} at offset ${descriptor.offset} with size ${descriptor.size} has already been used. Each output variable can only be used once.`);
+                    throw new Error(`Output variable from call ${descriptor.callIndex} at offset ${descriptor.offset} with size ${descriptor.size} has already been used. Each output variable can only be used once.`, { cause: new Error("duplicate descriptor") });
                 }
                 
                 this.usedDescriptors.add(descriptorId);
 
-                const currentMemPos = this.freeMemory;
                 const paramOffset = 4 + 32 * index;
-                const prevCallEnd = prevCall.freeMemory + prevCall.fnCalldata.length / 2;
                 
                 // Calculate dataPosition based on path within the argument
                 let dataPosition = paramOffset;
@@ -526,7 +524,6 @@ export class TransactionBuilder {
             target,
             fnCalldata,
             calltype_flag: callType,
-            freeMemory: this.freeMemory,
             memTargets: [],
             resultLengths: [],
             returnOffsets: [],
@@ -535,13 +532,23 @@ export class TransactionBuilder {
             functionName,
         });
 
-        this.freeMemory += fnCalldata.length / 2;
-
         const allOutputs = this.#buildFunctionOutputs(functionAbi);
         this.#validateDynamicReturns(allOutputs, functionAbi);
 
         if (functionAbi.outputs.length === 1 && functionAbi.outputs[0].type === "tuple") {
-            return this.#createStructProxy(functionAbi.outputs[0].components, allOutputs, 0).proxy;
+            const { proxy } = this.#createStructProxy(functionAbi.outputs[0].components, allOutputs, 0);
+            // Expose named field access directly on the array so both styles work:
+            //   const [first, second] = builder.addCall(...)   // positional
+            //   const result = builder.addCall(...); result.a  // named
+            for (const key of Object.keys(proxy)) {
+                Object.defineProperty(allOutputs, key, {
+                    get: () => proxy[key],
+                    enumerable: false,
+                    configurable: true,
+                });
+            }
+            allOutputs.struct = proxy;
+            return allOutputs;
         }
 
         return functionAbi.outputs.length === 1 ? allOutputs[0] : allOutputs;
@@ -554,31 +561,44 @@ export class TransactionBuilder {
         const calldatas = [];
         const msgValues = [];
 
+        let callIndex = 0;
         for (const _call of this.calls) {
             targets.push(_call.target);
             calldatas.push(_call.fnCalldata);
 
             if (_call.memTargets.length > 3) {
-                throw Error(`Too many variables from one call: ${_call.memTargets.length}`);
+                throw Error(`Call #${callIndex}: Too many variables (${_call.memTargets.length}) from one call`);
+            }
+
+            for (let j = 0; j < _call.returnOffsets.length; j++) {
+                if (_call.returnOffsets[j] + _call.resultLengths[j] > _call.returnDataSize) {
+                    throw new Error(`Call #${callIndex} variable ${j}: return data slice exceeds returnDataSize`);
+                }
             }
 
             if (_call.calltype_flag != STATIC_CALL_FLAG && _call.calltype_flag != CALL_FLAG) {
-                throw Error(`Invalid calltype flag: ${_call.calltype_flag}`);
+                throw Error(`Call #${callIndex}: Invalid calltype flag: ${_call.calltype_flag}`);
             }
 
             if (_call.calltype_flag == STATIC_CALL_FLAG) {
                 offsets.push(_call.memTargets.length > 0
                     ? staticCallPartialReturn(_call.memTargets, _call.resultLengths, _call.returnOffsets, _call.returnDataSize)
                     : staticCall(0, 0));
+                callIndex++;
                 continue;
             }
 
-            if (_call.msgValue > 0) {
+            if (_call.memTargets.length > 0) {
+                const msgValueIndex = _call.msgValue > 0 ? msgValues.length + 1 : 0;
+                if (_call.msgValue > 0) msgValues.push(_call.msgValue);
+                offsets.push(callPartialReturn(msgValueIndex, _call.memTargets, _call.resultLengths, _call.returnOffsets, _call.returnDataSize));
+            } else if (_call.msgValue > 0) {
                 offsets.push(stateChangingCall(msgValues.length + 1));
                 msgValues.push(_call.msgValue);
             } else {
                 offsets.push(stateChangingCall());
             }
+            callIndex++;
         }
         return { targets, offsets, calldatas, msgValues };
     }
@@ -594,19 +614,9 @@ export function staticCall(memTarget, resultLength) {
 }
 
 export function stateChangingCall(msgValueIndex = 0) {
-    return _stateChangingCall(msgValueIndex, 0, 0);
-}
-
-function _stateChangingCall(msgValueIndex, memTarget, resultLength) {
     msgValueIndex = BigInt(msgValueIndex);
-    memTarget = BigInt(memTarget);
-    resultLength = BigInt(resultLength);
-
     if (msgValueIndex > UINT8_MAX) throw new Error("msgValueIndex too large");
-    if (memTarget > UINT120_MAX) throw new Error("memTarget value too large");
-    if (resultLength > UINT120_MAX) throw new Error("resultLength value too large");
-
-    return (CALL_FLAG << VALUE_OFFSET) | (msgValueIndex << BigInt(240)) | (memTarget << BigInt(120)) | resultLength;
+    return (CALL_FLAG << VALUE_OFFSET) | (msgValueIndex << BigInt(240));
 }
 
 export function staticCallPartialReturn(memTargets, resultLengths, returnOffsets, returnDataSize) {
@@ -640,6 +650,45 @@ export function staticCallPartialReturn(memTargets, resultLengths, returnOffsets
     }
 
     return (STATIC_CALL_PARTIAL_RETURN_FLAG << VALUE_OFFSET) |
+        (encodedMemTargets << BigInt(120)) |
+        (encodedResultLengths << BigInt(72)) |
+        (encodedOffsets << BigInt(24)) |
+        (returnDataSize << BigInt(8)) |
+        BigInt(len);
+}
+
+export function callPartialReturn(msgValueIndex, memTargets, resultLengths, returnOffsets, returnDataSize) {
+    msgValueIndex = BigInt(msgValueIndex);
+    returnDataSize = BigInt(returnDataSize);
+
+    if (memTargets.length > PARTIAL_RETURN_VARS || resultLengths.length > PARTIAL_RETURN_VARS || returnOffsets.length > PARTIAL_RETURN_VARS) {
+        throw new Error("invalid number of params");
+    }
+    if (msgValueIndex > UINT8_MAX) throw new Error("msgValueIndex too large");
+    if (returnDataSize > UINT16_MAX) throw new Error("returnDataSize is too large");
+
+    const len = memTargets.length;
+    let encodedMemTargets = BigInt(0);
+    let encodedResultLengths = BigInt(0);
+    let encodedOffsets = BigInt(0);
+
+    for (let i = 0; i < len; i++) {
+        const memTarget = BigInt(memTargets[i]);
+        const resultLength = BigInt(resultLengths[i]);
+        const returnOffset = BigInt(returnOffsets[i]);
+
+        if (memTarget > UINT40_MAX) throw new Error("memTarget value too large");
+        if (resultLength > UINT16_MAX) throw new Error("resultLength value too large");
+        if (returnOffset > UINT16_MAX) throw new Error("returnOffset value too large");
+
+        const varOffset = Number(PARTIAL_RETURN_VARS) - (i + 1);
+        encodedMemTargets |= memTarget << BigInt(varOffset * 40);
+        encodedResultLengths |= resultLength << BigInt(varOffset * 16);
+        encodedOffsets |= returnOffset << BigInt(varOffset * 16);
+    }
+
+    return (CALL_PARTIAL_RETURN_FLAG << VALUE_OFFSET) |
+        (msgValueIndex << BigInt(240)) |
         (encodedMemTargets << BigInt(120)) |
         (encodedResultLengths << BigInt(72)) |
         (encodedOffsets << BigInt(24)) |

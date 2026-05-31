@@ -1,15 +1,45 @@
 {
   "name": "multicall-scripter",
   "version": "1.0.0",
+  "description": "Build atomic multi-contract transactions with return value chaining",
+  "type": "module",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./abi": "./abi.js"
+  },
+  "files": [
+    "index.js",
+    "abi.js",
+    "cli.js",
+    "README.md"
+  ],
   "bin": {
     "tx-builder": "./cli.js"
   },
   "scripts": {
     "build": "node cli.js"
   },
+  "keywords": [
+    "multicall",
+    "ethereum",
+    "evm",
+    "viem",
+    "solidity",
+    "defi",
+    "atomic",
+    "transaction"
+  ],
+  "author": "0xdewy",
+  "license": "GPL-3.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/0xdewy/multicall-scripting"
+  },
+  "engines": {
+    "node": ">=18"
+  },
   "dependencies": {
-    "abitype": "^1.0.8",
-    "tevm": "^1.0.0-next.147",
     "viem": "^2.32.1"
   }
 }

@@ -1,20 +1,8 @@
-/**
- * Struct Edge Cases Test
- * 
- * Tests various edge cases for struct handling in the JavaScript library:
- * 1. Nested structs (struct within struct)
- * 2. Arrays of structs
- * 3. Structs with dynamic types
- * 4. Empty structs
- * 5. Structs with mixed types
- * 6. Multiple struct returns
- */
+import { fileURLToPath } from "url";
+import { keccak256, toBytes } from "viem";
+import { TransactionBuilder, STATIC_CALL_FLAG, VALUE_OFFSET } from "../index.js";
 
-const { TransactionBuilder } = require("../index.js");
-
-// Test ABIs for various struct edge cases
 const ABIS = {
-  // Nested struct
   NESTED_STRUCT: [
     {
       type: "function",
@@ -31,17 +19,16 @@ const ABIS = {
               type: "tuple",
               components: [
                 { name: "innerValue", type: "uint256" },
-                { name: "innerString", type: "string" }
-              ]
-            }
-          ]
-        }
+                { name: "innerString", type: "string" },
+              ],
+            },
+          ],
+        },
       ],
-      stateMutability: "pure"
-    }
+      stateMutability: "pure",
+    },
   ],
-  
-  // Array of structs
+
   ARRAY_OF_STRUCTS: [
     {
       type: "function",
@@ -54,15 +41,14 @@ const ABIS = {
           components: [
             { name: "id", type: "uint256" },
             { name: "name", type: "string" },
-            { name: "value", type: "uint256" }
-          ]
-        }
+            { name: "value", type: "uint256" },
+          ],
+        },
       ],
-      stateMutability: "pure"
-    }
+      stateMutability: "pure",
+    },
   ],
-  
-  // Struct with dynamic array
+
   STRUCT_WITH_ARRAY: [
     {
       type: "function",
@@ -75,15 +61,14 @@ const ABIS = {
           components: [
             { name: "count", type: "uint256" },
             { name: "values", type: "uint256[]" },
-            { name: "names", type: "string[]" }
-          ]
-        }
+            { name: "names", type: "string[]" },
+          ],
+        },
       ],
-      stateMutability: "pure"
-    }
+      stateMutability: "pure",
+    },
   ],
-  
-  // Multiple struct returns
+
   MULTIPLE_STRUCTS: [
     {
       type: "function",
@@ -95,40 +80,32 @@ const ABIS = {
           type: "tuple",
           components: [
             { name: "a", type: "uint256" },
-            { name: "b", type: "uint256" }
-          ]
+            { name: "b", type: "uint256" },
+          ],
         },
         {
           name: "second",
           type: "tuple",
           components: [
             { name: "x", type: "string" },
-            { name: "y", type: "uint256" }
-          ]
-        }
+            { name: "y", type: "uint256" },
+          ],
+        },
       ],
-      stateMutability: "pure"
-    }
+      stateMutability: "pure",
+    },
   ],
-  
-  // Empty struct (no components)
+
   EMPTY_STRUCT: [
     {
       type: "function",
       name: "getEmptyStruct",
       inputs: [],
-      outputs: [
-        {
-          name: "",
-          type: "tuple",
-          components: []
-        }
-      ],
-      stateMutability: "pure"
-    }
+      outputs: [{ name: "", type: "tuple", components: [] }],
+      stateMutability: "pure",
+    },
   ],
-  
-  // Mixed type struct
+
   MIXED_TYPES: [
     {
       type: "function",
@@ -144,195 +121,122 @@ const ABIS = {
             { name: "boolValue", type: "bool" },
             { name: "addressValue", type: "address" },
             { name: "bytesValue", type: "bytes32" },
-            { name: "stringValue", type: "string" }
-          ]
-        }
+            { name: "stringValue", type: "string" },
+          ],
+        },
       ],
-      stateMutability: "pure"
-    }
-  ]
+      stateMutability: "pure",
+    },
+  ],
 };
 
-// Mock contract addresses (these would be real in tests)
 const MOCK_ADDRESSES = {
   NESTED_STRUCT: "0x0000000000000000000000000000000000000001",
   ARRAY_OF_STRUCTS: "0x0000000000000000000000000000000000000002",
   STRUCT_WITH_ARRAY: "0x0000000000000000000000000000000000000003",
   MULTIPLE_STRUCTS: "0x0000000000000000000000000000000000000004",
   EMPTY_STRUCT: "0x0000000000000000000000000000000000000005",
-  MIXED_TYPES: "0x0000000000000000000000000000000000000006"
+  MIXED_TYPES: "0x0000000000000000000000000000000000000006",
 };
 
-function testStructEdgeCases() {
-  console.log('='.repeat(80));
-  console.log('STRUCT EDGE CASES TEST');
-  console.log('='.repeat(80));
-  
-  const builder = new TransactionBuilder();
-  const testResults = [];
-  
-  try {
-    // Test 1: Nested struct
-    console.log('\n1. Testing nested struct...');
-    builder.addCall(
-      ABIS.NESTED_STRUCT,
-      MOCK_ADDRESSES.NESTED_STRUCT,
-      "getNestedStruct",
-      []
-    );
-    
-    // Test 2: Array of structs
-    console.log('2. Testing array of structs...');
-    builder.addCall(
-      ABIS.ARRAY_OF_STRUCTS,
-      MOCK_ADDRESSES.ARRAY_OF_STRUCTS,
-      "getStructArray",
-      []
-    );
-    
-    // Test 3: Struct with dynamic array
-    console.log('3. Testing struct with dynamic array...');
-    builder.addCall(
-      ABIS.STRUCT_WITH_ARRAY,
-      MOCK_ADDRESSES.STRUCT_WITH_ARRAY,
-      "getStructWithArray",
-      []
-    );
-    
-    // Test 4: Multiple struct returns
-    console.log('4. Testing multiple struct returns...');
-    builder.addCall(
-      ABIS.MULTIPLE_STRUCTS,
-      MOCK_ADDRESSES.MULTIPLE_STRUCTS,
-      "getMultipleStructs",
-      []
-    );
-    
-    // Test 5: Empty struct
-    console.log('5. Testing empty struct...');
-    builder.addCall(
-      ABIS.EMPTY_STRUCT,
-      MOCK_ADDRESSES.EMPTY_STRUCT,
-      "getEmptyStruct",
-      []
-    );
-    
-    // Test 6: Mixed type struct
-    console.log('6. Testing mixed type struct...');
-    builder.addCall(
-      ABIS.MIXED_TYPES,
-      MOCK_ADDRESSES.MIXED_TYPES,
-      "getMixedStruct",
-      []
-    );
-    
-    // Build the transaction
-    const transaction = builder.build();
-    
-    console.log(`\n✅ Transaction built successfully`);
-    console.log(`   Total calls: ${transaction.targets.length}`);
-    console.log(`   Calldatas: ${transaction.calldatas.length}`);
-    
-    // Verify the structure
-    testResults.push({
-      test: "Nested struct",
-      passed: true,
-      note: "Should return object with nested.inner.innerValue property access"
-    });
-    
-    testResults.push({
-      test: "Array of structs",
-      passed: true,
-      note: "Should return array where each element is an object with id, name, value properties"
-    });
-    
-    testResults.push({
-      test: "Struct with dynamic array",
-      passed: true,
-      note: "Should return object with arrays in values and names properties"
-    });
-    
-    testResults.push({
-      test: "Multiple struct returns",
-      passed: true,
-      note: "Should return array with two struct objects at indices 0 and 1"
-    });
-    
-    testResults.push({
-      test: "Empty struct",
-      passed: true,
-      note: "Should return empty object {}"
-    });
-    
-    testResults.push({
-      test: "Mixed type struct",
-      passed: true,
-      note: "Should return object with uintValue, intValue, boolValue, addressValue, bytesValue, stringValue properties"
-    });
-    
-    // Summary
-    console.log('\n' + '='.repeat(80));
-    console.log('TEST SUMMARY');
-    console.log('='.repeat(80));
-    
-    let passed = 0;
-    let failed = 0;
-    
-    testResults.forEach((result, index) => {
-      if (result.passed) {
-        passed++;
-        console.log(`✅ ${index + 1}. ${result.test}`);
-        console.log(`   ${result.note}`);
-      } else {
-        failed++;
-        console.log(`❌ ${index + 1}. ${result.test}`);
-        console.log(`   ${result.note}`);
-      }
-    });
-    
-    console.log('\n' + '='.repeat(80));
-    console.log(`RESULTS: ${passed} passed, ${failed} failed`);
-    console.log('='.repeat(80));
-    
-    if (failed === 0) {
-      console.log('\n🎯 All struct edge case tests passed!');
-      console.log('The library correctly handles:');
-      console.log('• Nested structs with property access');
-      console.log('• Arrays of structs');
-      console.log('• Structs with dynamic types');
-      console.log('• Multiple return values');
-      console.log('• Empty structs');
-      console.log('• Mixed type structs');
-    } else {
-      console.log('\n⚠️  Some tests failed. Check implementation.');
-    }
-    
-    return {
-      success: failed === 0,
-      testResults,
-      transaction
-    };
-    
-  } catch (error) {
-    console.error('\n❌ Error during test:', error.message);
-    return {
-      success: false,
-      error: error.message
-    };
-  }
+// Cases supported by the current implementation (single or last-field dynamic types only)
+const SUPPORTED_CASES = {
+  NESTED_STRUCT: "getNestedStruct",
+  ARRAY_OF_STRUCTS: "getStructArray",
+  EMPTY_STRUCT: "getEmptyStruct",
+  MIXED_TYPES: "getMixedStruct",
+};
+
+// Cases that are known-unsupported: dynamic fields not in last position when flattened.
+// These should fail with a descriptive error rather than silently producing wrong output.
+const UNSUPPORTED_CASES = {
+  STRUCT_WITH_ARRAY: {
+    name: "getStructWithArray",
+    expectedError: "Dynamic return type must be the last return value",
+  },
+  // second tuple has {x: string, y: uint256} — flattened: [..., string, uint256], string is not last
+  MULTIPLE_STRUCTS: {
+    name: "getMultipleStructs",
+    expectedError: "Dynamic return type must be the last return value",
+  },
+};
+
+function selector(abi) {
+  const fn = abi[0];
+  const sig = `${fn.name}(${fn.inputs.map(i => i.type).join(",")})`;
+  return keccak256(toBytes(sig)).slice(0, 10);
 }
 
-// Export for testing
-module.exports = { testStructEdgeCases };
+export function testStructEdgeCases() {
+  const results = [];
+  let allPassed = true;
 
-// Run if called directly
-if (require.main === module) {
+  // --- supported cases: must build without error and encode correctly ---
+  const builder = new TransactionBuilder();
+  const expectedSelectors = [];
+
+  for (const [key, fnName] of Object.entries(SUPPORTED_CASES)) {
+    const abi = ABIS[key];
+    expectedSelectors.push(selector(abi));
+    try {
+      builder.addCall(abi, MOCK_ADDRESSES[key], fnName, []);
+      results.push({ test: `${key}: addCall succeeds`, passed: true });
+    } catch (e) {
+      results.push({ test: `${key}: addCall succeeds`, passed: false, error: e.message });
+      allPassed = false;
+    }
+  }
+
+  try {
+    const tx = builder.build();
+    const n = Object.keys(SUPPORTED_CASES).length;
+
+    const checks = [
+      ["supported: call count", tx.targets.length === n],
+      ["supported: offset count", tx.offsets.length === n],
+      ["supported: msgValues empty", tx.msgValues.length === 0],
+      ["supported: targets valid", tx.targets.every(t => typeof t === "string" && t.startsWith("0x") && t.length === 42)],
+      // Each calldata must start with the expected 4-byte function selector
+      ["supported: calldatas match selectors", tx.calldatas.every((c, i) => c.startsWith(expectedSelectors[i]))],
+      // All functions are pure → top byte of every offset must be STATIC_CALL_FLAG (0xFF)
+      ["supported: offsets have static calltype", tx.offsets.every(o => (o >> VALUE_OFFSET) === STATIC_CALL_FLAG)],
+    ];
+
+    for (const [name, passed] of checks) {
+      results.push({ test: name, passed });
+      if (!passed) allPassed = false;
+    }
+  } catch (e) {
+    results.push({ test: "supported: build() succeeds", passed: false, error: e.message });
+    allPassed = false;
+  }
+
+  // --- unsupported cases: must throw the expected error, not silently produce wrong output ---
+  for (const [key, { name, expectedError }] of Object.entries(UNSUPPORTED_CASES)) {
+    try {
+      const b = new TransactionBuilder();
+      b.addCall(ABIS[key], MOCK_ADDRESSES[key], name, []);
+      results.push({ test: `${key}: rejects unsupported layout`, passed: false, error: "expected error but none thrown" });
+      allPassed = false;
+    } catch (e) {
+      const passed = e.message.includes(expectedError);
+      results.push({ test: `${key}: rejects unsupported layout`, passed, error: passed ? undefined : `wrong error: ${e.message}` });
+      if (!passed) allPassed = false;
+    }
+  }
+
+  return { success: allPassed, results };
+}
+
+const isMain = process.argv[1] === fileURLToPath(import.meta.url);
+if (isMain) {
   const result = testStructEdgeCases();
   if (result.success) {
-    console.log('\n✅ Struct edge cases test completed successfully');
+    console.log("struct edge cases: all passed");
     process.exit(0);
   } else {
-    console.error('\n❌ Struct edge cases test failed');
+    const failed = result.results?.filter(r => !r.passed);
+    console.error("struct edge cases: failed", failed);
     process.exit(1);
   }
 }

@@ -431,4 +431,38 @@ contract JsLibrary is Test, CallBuilder, MulticallScripter {
 
         assertEq(stringAndBytesOps.getDynamicBytes(), hex"deadbeefcafebabe1234567890abcdef11223344");
     }
+
+    // Verify that JS-built offsets decode to the expected field values using CallDecoder.
+    // This catches any shift-by-1 or bit-packing divergence between the JS and Solidity encoders.
+    function test_js_encoding_roundtrip() public {
+        string[] memory inputs = new string[](2);
+        inputs[0] = "bun";
+        inputs[1] = "js/test/encodingRoundtrip.js";
+
+        bytes memory res = vm.ffi(inputs);
+        string memory json = string(res);
+
+        // --- staticCall(0x24, 0x20) ---
+        uint256 staticCallSimple = vm.parseJsonUint(json, ".staticCallSimple");
+        assertEq(callDecoder.getMemTarget(staticCallSimple), 0x24, "staticCall: memTarget mismatch");
+        assertEq(callDecoder.getResultLength(staticCallSimple), 0x20, "staticCall: resultLength mismatch");
+        assertEq(staticCallSimple >> 248, STATIC_CALL_FLAG, "staticCall: calltype mismatch");
+
+        // --- stateChangingCall(0) ---
+        uint256 stateChangingNoValue = vm.parseJsonUint(json, ".stateChangingNoValue");
+        assertEq(callDecoder.getValueIndex(stateChangingNoValue), 0, "stateChangingCall(0): valueIndex mismatch");
+        assertEq(stateChangingNoValue >> 248, CALL_FLAG, "stateChangingCall(0): calltype mismatch");
+
+        // --- stateChangingCall(2) ---
+        uint256 stateChangingWithValue = vm.parseJsonUint(json, ".stateChangingWithValue");
+        assertEq(callDecoder.getValueIndex(stateChangingWithValue), 2, "stateChangingCall(2): valueIndex mismatch");
+        assertEq(stateChangingWithValue >> 248, CALL_FLAG, "stateChangingCall(2): calltype mismatch");
+
+        // --- staticCallPartialReturn: calltype byte must be 0xFC ---
+        uint256 partialReturnOne = vm.parseJsonUint(json, ".partialReturnOne");
+        assertEq(partialReturnOne >> 248, STATIC_CALL_PARTIAL_RETURN_FLAG, "partialReturn(1): calltype mismatch");
+
+        uint256 partialReturnTwo = vm.parseJsonUint(json, ".partialReturnTwo");
+        assertEq(partialReturnTwo >> 248, STATIC_CALL_PARTIAL_RETURN_FLAG, "partialReturn(2): calltype mismatch");
+    }
 }

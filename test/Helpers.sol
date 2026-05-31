@@ -201,6 +201,12 @@ contract ArrayElementAccess {
     }
 }
 
+contract CalldataVerifier {
+    uint256 public lastCalldataLength;
+    function noArgs() external payable { lastCalldataLength = msg.data.length; }
+    function noArgsView() external view returns (uint256) { return msg.data.length; }
+}
+
 contract StringAndBytesOperations {
     string public text;
     bytes public dynamicBytes;

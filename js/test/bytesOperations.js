@@ -1,60 +1,51 @@
-const { TransactionBuilder } = require("../index.js");
-const { loadABI } = require("./common.js");
+import { TransactionBuilder } from "../index.js";
+import { loadABI } from "./common.js";
 
 function main() {
-    const targetAddress = process.argv[2];
-    const abiPath = process.argv[3];
-    
-    const abi = loadABI(abiPath);
-    const builder = new TransactionBuilder();
+  const targetAddress = process.argv[2];
+  const abiPath = process.argv[3];
 
-    // Test 1: Get constant bytes, use it in concatenation
-    const constantBytes = builder.addCall(
-        abi,
-        targetAddress,
-        "getConstantBytes",
-        [],
-        BigInt(0),
-    );
-    
-    constantBytes.with_length(16); // 16 bytes
-    
-    // Use the retrieved bytes
-    const concenatedBytes = builder.addCall(
-        abi,
-        targetAddress,
-        "concatenateBytes",
-        [constantBytes, "0x11223344"],
-        BigInt(0),
-    );
+  const abi = loadABI(abiPath);
+  const builder = new TransactionBuilder();
 
-    concenatedBytes.with_length(20);
-    
+  const constantBytes = builder.addCall(
+    abi,
+    targetAddress,
+    "getConstantBytes",
+    [],
+    BigInt(0),
+  );
 
-    // Use the retrieved bytes
-    builder.addCall(
-        abi,
-        targetAddress,
-        "setDynamicBytes",
-        [concenatedBytes],
-        BigInt(0),
-    );
-    
-    const result = builder.build();
-    
-    // Convert BigInts: msgValues to numbers, offsets to strings (to preserve precision)
-    const msgValues = result.msgValues.map(v => Number(v));
-    
-    // Serialize the result for comparison
-    const serializableResult = {
-        targets: result.targets,
-        offsets: result.offsets.map((offset) => offset.toString()),
-        calldatas: result.calldatas,
-        msgValues: msgValues,
-    };
-    
-    // Only print the JSON to stdout
-    console.log(JSON.stringify(serializableResult));
+  constantBytes.with_length(16);
+
+  const concatenatedBytes = builder.addCall(
+    abi,
+    targetAddress,
+    "concatenateBytes",
+    [constantBytes, "0x11223344"],
+    BigInt(0),
+  );
+
+  concatenatedBytes.with_length(20);
+
+  builder.addCall(
+    abi,
+    targetAddress,
+    "setDynamicBytes",
+    [concatenatedBytes],
+    BigInt(0),
+  );
+
+  const result = builder.build();
+
+  const serializableResult = {
+    targets: result.targets,
+    offsets: result.offsets.map((offset) => offset.toString()),
+    calldatas: result.calldatas,
+    msgValues: result.msgValues.map(v => Number(v)),
+  };
+
+  console.log(JSON.stringify(serializableResult));
 }
 
 main();
