@@ -1,7 +1,7 @@
 <!-- agentify: generated 2026-05-31 | score-before: 0 | source: 1.3.0 -->
 ---
 title: Security self-audit (AUDIT.md)
-status: ready
+status: complete
 ---
 
 ## What
@@ -14,8 +14,8 @@ Not suitable for production use without independent review." — but the file
 doesn't exist. Anyone considering using this library has no security context.
 
 ## Acceptance criteria
-- [ ] `AUDIT.md` exists at repo root
-- [ ] Covers at minimum:
+- [x] `AUDIT.md` exists at repo root
+- [x] Covers at minimum:
   - **Trust model:** Who supplies what input? (user supplies all arrays —
     offsets determine memory targets, so caller controls everything)
   - **Reentrancy:** Stateless contract, low risk. But `delegatecall` would
@@ -28,8 +28,8 @@ doesn't exist. Anyone considering using this library has no security context.
     direct ETH
   - **EIP-7702 interaction:** `7702Caller.sol` delegates to MulticallScripter
   - **Known gaps:** 0xFD unimplemented, 0xFB undertested, no formal verification
-- [ ] Severity ratings for each finding (critical/high/medium/low)
-- [ ] Recommendations for production use (minimum: independent audit)
+- [x] Severity ratings for each finding (critical/high/medium/low)
+- [x] Recommendations for production use (minimum: independent audit)
 
 ## Steps
 1. Review all assembly paths in `MulticallScripter.sol`

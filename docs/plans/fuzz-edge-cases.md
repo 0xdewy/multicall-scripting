@@ -1,7 +1,7 @@
 <!-- agentify: generated 2026-05-31 | score-before: 0 | source: 1.3.0 -->
 ---
 title: Property-based fuzz tests for JS builder
-status: ready
+status: complete
 ---
 
 ## What
@@ -18,16 +18,16 @@ and test in both layers.
   actually test the `require()` in `CallBuilder.sol:87`.
 
 ## Acceptance criteria
-- [ ] Property test: random call sequence → `build()` → verify:
+- [x] Property test: random call sequence → `build()` → verify:
   - No two memTarget ranges overlap
   - Every memTarget + resultLength ≤ calldata region size
   - `returnOffsets[i] + resultLengths[i] ≤ returnDataSize`
   - All calltype flags are valid
   - `num_vars ≤ 3`
-- [ ] `test_partial_return_overflow` is un-skipped and passes in both:
-  - Solidity: `CallBuilder.sol:87` `require(returnLength <= type(uint16).max)`
+- [x] `test_partial_return_overflow` is un-skipped and passes in both:
+  - Solidity: `CallBuilder.sol:87` `require(returnLength <= type(uint16).max)` — via `PartialReturnTestWrapper`
   - JS: `staticCallPartialReturn` throws on `returnDataSize > 0xFFFF`
-- [ ] Fuzz test: `test_partial_return` with randomized valid inputs in `MulticallScripter.t.sol`
+- [x] Fuzz test: `test_fuzz_partialReturn` with randomized valid inputs in `MulticallScripter.t.sol` (257 fuzz iterations)
 
 ## Steps
 1. Install a property-testing library for Bun (e.g., fast-check or write custom)

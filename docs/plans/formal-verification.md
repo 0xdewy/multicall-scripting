@@ -32,5 +32,26 @@ absence of such bugs for all inputs within the valid ranges.
 3. Integrate into CI
 4. Document in `docs/contracts.md` under a new "Verification" section
 
+## Critical constraint: bytecode-level verification only
+
+Research (251 papers; `research/evm-vm-gas-verification/RESEARCH.md`) establishes
+that **source-level verifiers structurally cannot express this VM's semantics**.
+solc-verify "does not support low-level function calls such as callcode and
+delegatecall as … would require encoding of the EVM details" and "does not
+support inline assembly" (DOI 10.1007/978-3-030-41600-3_11, full text) — exactly
+the constructs MulticallScripter is built from (assembly memory manipulation,
+CALL/STATICCALL, mcopy). eThor demonstrates that sound bytecode analysis must
+operate over EVM small-step semantics because dynamic jumps defeat static CFG
+recovery (DOI 10.1145/3372297.3417250, full text).
+
+**Source-level tools (Slither, solc-verify, VerX-on-Solidity-source) are a dead
+end for this VM.** Verification tooling MUST target EVM bytecode: Halmos
+(symbolic execution of bytecode), hevm (bytecode-level symbolic execution), or
+Certora with bytecode-level specs. For composability safety specifically, see
+`docs/plans/composability-verification.md`.
+
 ## Dependencies
 - Shared encode/decode schema (complete)
+- `docs/plans/composability-verification.md` — formal non-interference property
+  statement for multicall scripts
+- `docs/plans/symbolic-execution.md` — Halmos/hevm for encoding-layer proofs

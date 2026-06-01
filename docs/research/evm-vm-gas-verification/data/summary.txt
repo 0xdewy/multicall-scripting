@@ -1,0 +1,46 @@
+total 403
+by source {'openalex': 100, 'semanticscholar': 25, 'crossref': 129, 'europepmc': 49, 'arxiv': 100}
+retracted 0
+years [(2016, 5), (2017, 6), (2018, 46), (2019, 34), (2020, 49), (2021, 42), (2022, 42), (2023, 45), (2024, 54), (2025, 59), (2026, 21)]
+
+=== TOP 40 BY CITATIONS ===
+[2336] 2023 GPT-4 Technical Report
+[855] 2020 All you need to know about model predictive control for buildings
+[801] 2021 A Unifying Review of Deep and Shallow Anomaly Detection
+[793] 2021 Blockchain smart contracts: Applications, challenges, and future trends
+[709] 2018 ZEUS: Analyzing Safety of Smart Contracts
+[647] 2018 SmartCheck
+[622] 2016 Formal Verification of Smart Contracts: Short Paper
+[584] 2021 Supply chain disruptions and resilience: a major review and future research agenda
+[581] 2019 Using Blockchain for Electronic Health Records
+[500] 2020 A Blockchain-Based Smart Contract System for Healthcare Management
+[497] 2018 Blockchain's adoption in IoT: The challenges, and a way forward
+[467] 2020 A Survey on Ethereum Systems Security
+[425] 2018 Osiris
+[420] 2020 Survey on blockchain based smart contracts: Applications, opportunities and challenges
+[412] 2019 Ekiden: A Platform for Confidentiality-Preserving, Trustworthy, and Performant Smart Contracts
+[412] 2019 Privacy-Preserving Solutions for Blockchain: Review and Challenges
+[402] 2018 Detecting Ponzi Schemes on Ethereum
+[344] 2018 MadMax: surviving out-of-gas conditions in Ethereum smart contracts
+[332] 2022 Systematic Review of Security Vulnerabilities in Ethereum Blockchain Smart Contract
+[331] 2017 Blockchain Based Smart Contracts : A Systematic Mapping Study
+[318] 2020 Smart Contract: Attacks and Protections
+[307] 2019 Security, Performance, and Applications of Smart Contracts: A Systematic Survey
+[284] 2020 Performance Evaluation of Blockchain Systems: A Systematic Survey
+[262] 2018 Towards verifying ethereum smart contract bytecode in Isabelle/HOL
+[253] 2019 Exploiting Blockchain Data to Detect Smart Ponzi Schemes on Ethereum
+[253] 2019 A Survey on Security Verification of Blockchain Smart Contracts
+[237] 2020 VerX: Safety Verification of Smart Contracts
+[227] 2020 XBlock-ETH: Extracting and Exploring Blockchain Data From Ethereum
+[224] 2019 Smart Contract-Based Product Traceability System in the Supply Chain Scenario
+[222] 2022 A survey of application research based on blockchain smart contract
+[192] 2018 A Semantic Framework for the Security Analysis of Ethereum Smart Contracts
+[180] 2021 Survey on Blockchain-Based Smart Contracts: Technical Aspects and Future Research
+[176] 2023 Artificial intelligence in supply chain and operations management: a multiple case study research
+[176] 2019 A Review of Blockchain-Based Systems in Transportation
+[171] 2020 Peer-to-Peer Energy Trading in Virtual Power Plant Based on Blockchain Smart Contracts
+[169] 2022 A Decade Review on Smart Cities: Paradigms, Challenges and Opportunities
+[165] 2022 Ethereum Smart Contract Analysis Tools: A Systematic Review
+[152] 2019 Smart Contract Security: A Software Lifecycle Perspective
+[147] 2021 Ethical Marketing in the Blockchain-Based Sharing Economy: Theoretical Integration and Guiding Insights
+[141] 2020 Design Choices for Central Bank Digital Currency: Policy and Technical Considerations

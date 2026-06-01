@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Unlicense
 pragma solidity >=0.8.0 <0.9.0;
 
-import {Test, console2} from "forge-std/Test.sol";
+import {Test} from "forge-std/Test.sol";
 import "weiroll-huff/weiroll/Planner.sol";
 import "weiroll-huff/weiroll/Weiroll.sol";
 import "weiroll-huff/weiroll/CommandBuilder.sol";
@@ -35,13 +35,15 @@ contract GasTest is Test, Events, CallBuilder {
         math = new Math();
     }
 
-    // call math.add() 30 times
+    // call math.add() 30 times — assert Scripter beats Weiroll and stays within 3x direct cost
     function testGasCompareAddUints() public {
         uint256 a = 10000;
         uint256 b = 32490283094;
 
-        uint256 gasUsed = 1;
-        uint256 gas = 1;
+        uint256 weirollGas;
+        uint256 scripterGas;
+        uint256 directGas;
+        uint256 g;
 
         // encode weiroll calls
         for (uint256 i = 0; i < 30; i++) {
@@ -53,10 +55,9 @@ contract GasTest is Test, Events, CallBuilder {
             planner.withArg(stateIndex);
         }
         (bytes32[] memory _commands, bytes[] memory _state) = planner.encode();
-        gas = gasleft();
+        g = gasleft();
         weiroll.execute(_commands, _state);
-        gasUsed = gas - gasleft();
-        console2.log("Gas - Weiroll.addUints(): ", gasUsed);
+        weirollGas = g - gasleft();
 
         // encode calls for scripter contract
         for (uint256 i = 0; i < 30; i++) {
@@ -68,18 +69,26 @@ contract GasTest is Test, Events, CallBuilder {
             targets.push(address(events));
             offsets.push(stateChangingCall(0x0));
         }
-        gas = gasleft();
+        g = gasleft();
         multicall.execute(targets, offsets, calldatas, values);
-        gasUsed = gas - gasleft();
-        console2.log("Gas - Scripter.addUints(): ", gasUsed);
+        scripterGas = g - gasleft();
 
         // make calls directly for baseline
-        gas = gasleft();
+        g = gasleft();
         for (uint256 i = 0; i < 30; i++) {
             uint256 val = math.add(a, b);
             events.logUint(val);
         }
-        console2.log("Gas - Base cost: ", gas - gasleft());
+        directGas = g - gasleft();
+
+        // Scripter must beat Weiroll (core value proposition: ~2x advantage)
+        assertLt(scripterGas, weirollGas, "Scripter must beat Weiroll on 30-call chain");
+
+        // Scripter overhead must stay within 3x of direct calls
+        assertLt(scripterGas, directGas * 3, "Scripter overhead >3x direct calls");
+
+        // Weiroll must beat naive iteration (sanity check)
+        assertLt(weirollGas, directGas * 30, "Weiroll too slow vs direct");
     }
 
     /*

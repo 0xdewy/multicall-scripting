@@ -399,14 +399,75 @@ contract MulticallScriptTest is Test, CallBuilder, MulticallScripter {
         assertEq(math.number(), 99);
     }
 
-    // Test that returnLength > uint16 max is rejected by CallBuilder
-    // This is validated via require() in CallBuilder.staticCallPartialReturn
-    // We verify via a contract call instead since expectRevert only works for external calls
+    // Test that returnLength > uint16 max is rejected by CallBuilder.staticCallPartialReturn
     function test_partial_return_overflow() public {
-        // staticCallPartialReturn enforces returnLength <= type(uint16).max via require()
-        // This is tested via the CallBuilder helpers in Solidity, and the JS layer
-        // has an equivalent check. The internal require fires on direct call.
-        // Skipping vm.expectRevert since it only works for external calls.
+        PartialReturnTestWrapper wrapper = new PartialReturnTestWrapper();
+        vm.expectRevert(bytes("returnLength is too large"));
+        wrapper.externalStaticCallPartialReturn(
+            _toUintArray(1, 0x04),
+            _toUintArray(1, 0x20),
+            _toUintArray(1, 0x00),
+            uint256(type(uint16).max) + 1
+        );
+    }
+
+    function test_partial_return_boundary() public {
+        PartialReturnTestWrapper wrapper = new PartialReturnTestWrapper();
+        uint256 offset = wrapper.externalStaticCallPartialReturn(
+            _toUintArray(1, 0x04),
+            _toUintArray(1, 0x20),
+            _toUintArray(1, 0x00),
+            uint256(type(uint16).max)
+        );
+        assertTrue(offset != 0, "should produce a valid offset");
+    }
+
+    function _toUintArray(uint256 len, uint256 value) private pure returns (uint256[] memory arr) {
+        arr = new uint256[](len);
+        for (uint256 i = 0; i < len; i++) {
+            arr[i] = value;
+        }
+    }
+
+    // Fuzz: staticCallPartialReturn with randomized valid inputs
+    function test_fuzz_partialReturn(
+        uint40 memTarget1,
+        uint40 memTarget2,
+        uint40 memTarget3,
+        uint16 resultLength1,
+        uint16 resultLength2,
+        uint16 resultLength3,
+        uint16 returnOffset1,
+        uint16 returnOffset2,
+        uint16 returnOffset3,
+        uint16 returnDataSize
+    ) public {
+        // Bound inputs to be valid (returnOffsets + resultLengths ≤ returnDataSize)
+        vm.assume(uint256(returnOffset1) + uint256(resultLength1) <= uint256(returnDataSize));
+        vm.assume(uint256(returnOffset2) + uint256(resultLength2) <= uint256(returnDataSize));
+        vm.assume(uint256(returnOffset3) + uint256(resultLength3) <= uint256(returnDataSize));
+
+        // All resultLengths must be > 0 (otherwise the variable is empty for this slot;
+        // zero-length slots at the end are fine since memTargets.length is dynamic)
+        // For the fuzz: we use all 3 slots regardless
+        memTargets = new uint256[](3);
+        resultLengths = new uint256[](3);
+        returnOffsets = new uint256[](3);
+        memTargets[0] = memTarget1;
+        memTargets[1] = memTarget2;
+        memTargets[2] = memTarget3;
+        resultLengths[0] = resultLength1;
+        resultLengths[1] = resultLength2;
+        resultLengths[2] = resultLength3;
+        returnOffsets[0] = returnOffset1;
+        returnOffsets[1] = returnOffset2;
+        returnOffsets[2] = returnOffset3;
+
+        // Should not revert for any valid input combination
+        uint256 offset = staticCallPartialReturn(memTargets, resultLengths, returnOffsets, returnDataSize);
+        assertTrue(offset != 0, "should produce non-zero offset");
+
+        // Decode and verify via the JS layer's schema (encode+decode roundtrip covered in js/test/)
     }
 
     function test_call_with_unpadded_calldata() public {
@@ -429,6 +490,19 @@ contract MulticallScriptTest is Test, CallBuilder, MulticallScripter {
         offsets.push(stateChangingCall());
         multicall.execute(targets, offsets, calldatas, values);
         assertEq(simpleReturn.getUint(), 4);
+    }
+}
+
+// Minimal external wrapper so vm.expectRevert can be used on the internal
+// staticCallPartialReturn function.
+contract PartialReturnTestWrapper is CallBuilder {
+    function externalStaticCallPartialReturn(
+        uint256[] memory memTargets,
+        uint256[] memory resultLengths,
+        uint256[] memory returnOffsets,
+        uint256 returnLength
+    ) external pure returns (uint256) {
+        return staticCallPartialReturn(memTargets, resultLengths, returnOffsets, returnLength);
     }
 }
 
