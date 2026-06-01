@@ -1,5 +1,11 @@
-<!-- agentify: generated 2026-05-31 | score-before: 0 | source: 1.3.0 -->
+<!-- agentify: generated 2026-06-01 | score-before: 75 | source: 1.4.0 -->
 # multicall-scripting
+
+Atomic multi-contract execution with return-value chaining: the return data of one
+call can be spliced into the calldata of a later call within the same transaction.
+A Solidity executor (`src/MulticallScripter.sol`, pure-assembly `execute()`) and a
+JavaScript transaction builder (`js/index.js`) share a 256-bit offset encoding
+defined canonically in `js/offset-schema.json`.
 
 @AGENTS.md
 

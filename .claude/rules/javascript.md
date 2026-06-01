@@ -1,9 +1,9 @@
-<!-- agentify: generated 2026-05-31 | score-before: 0 | source: 1.3.0 -->
 ---
 paths:
   - "js/**/*.js"
   - "js/**/*.ts"
 ---
+<!-- agentify: generated 2026-06-01 | score-before: 0 | source: 1.4.0 -->
 
 ## Conventions
 
