@@ -17,7 +17,10 @@ Multicall Scripting solves this by precalculating memory offsets offchain and us
 - **`MulticallScripter.sol`** — core execution contract. Accepts a batch of calls with encoded offset metadata and runs them in sequence, writing return data to the locations specified by the offsets.
 - **`CallBuilder.sol`** — Solidity DSL for building call chains in tests.
 - **`TransactionBuilder` (JS)** — builds the call batch, encodes offsets, and returns ABI-encoded arguments ready for `execute()`.
+- **`multicall-scripter` (Rust, `rust/`)** — an alloy-based port of the builder (codec + builder + CLI) for Rust/EVM tooling. See [docs/rust.md](docs/rust.md).
 - **Descriptors** — proxy objects returned by `addCall()`. Pass them as arguments to subsequent calls to express data dependencies.
+
+All three layers share one canonical bit layout, [`schema/offset-schema.json`](schema/offset-schema.json) — Solidity mirrors it by hand, JS reads a generated mirror, and Rust codegens from it.
 
 ## Quick start
 
@@ -31,6 +34,9 @@ cd js && bun install
 # Solidity (requires Foundry)
 curl -L https://foundry.paradigm.xyz | bash && foundryup
 forge install
+
+# Rust library (optional)
+cd rust && cargo build
 ```
 
 ### Read a balance, then transfer it
@@ -142,15 +148,35 @@ Each offset is a 256-bit value encoding the call type and copy instructions.
 - **Return data size capped at 65535 bytes** — the `returnDataSize` field is 16 bits.
 - **Requires Cancun or later** — the contract uses the `mcopy` opcode (EIP-5656).
 
-## Running tests
+## Testing & verification
+
+The three layers are kept in lockstep by a verification system built in three rings, all anchored
+on the canonical `schema/offset-schema.json`:
+
+1. **Within each layer** — Rust codec property tests (random-input encode/decode roundtrips),
+   Solidity fuzz/unit tests.
+2. **Cross-language golden vectors** — the JS builder generates committed vectors
+   (`js/test-vectors.json` for offsets, `js/build-vectors.json` for whole transactions) that both
+   the JS and Rust suites assert against. This proves the layers encode identically, down to the
+   ABI-encoded calldata.
+3. **On-chain** — Foundry FFI tests (`JsLibrary.t.sol`, `RustLibrary.t.sol`) execute built
+   transactions through the real contract and check the resulting state.
 
 ```bash
-# Solidity
+# Solidity (incl. the Rust→on-chain FFI tests)
 forge test -vv
 
 # JavaScript
 cd js && bun test
+
+# Rust
+cd rust && cargo test
 ```
+
+When changing the encoding, edit `schema/offset-schema.json`, then
+`cd js && bun run sync:schema && bun js/scripts/gen-test-vectors.js && bun js/scripts/gen-build-vectors.js`,
+and re-run all three suites — any drift between layers fails a test. See
+[docs/testing.md](docs/testing.md) for the full model.
 
 ## Security
 

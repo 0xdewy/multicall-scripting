@@ -1,0 +1,19 @@
+[package]
+name = "multicall-scripter-cli"
+version = "0.1.0"
+description = "CLI for building multicall transactions (mirrors js/cli.js); plugs into Foundry FFI tests"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "tx-builder-rs"
+path = "src/main.rs"
+
+[dependencies]
+multicall-scripter = { path = "../builder" }
+alloy-primitives = { workspace = true }
+alloy-json-abi = { workspace = true }
+alloy-dyn-abi = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

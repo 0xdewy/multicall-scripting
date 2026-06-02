@@ -1,0 +1,17 @@
+[workspace]
+resolver = "2"
+members = ["crates/codec", "crates/builder", "crates/cli"]
+
+[workspace.package]
+edition = "2021"
+license = "GPL-3.0"
+repository = "https://github.com/0xdewy/multicall-scripting"
+
+[workspace.dependencies]
+alloy-primitives = "1"
+alloy-json-abi = "1"
+alloy-dyn-abi = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+proptest = "1"

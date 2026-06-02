@@ -213,7 +213,9 @@ contract SevenSevenZeroTwoCaller is MulticallScripter {
      */
     function withdrawETH(address payable to, uint256 amount) external onlyAuthorized {
         require(address(this).balance >= amount, "7702Caller: insufficient balance");
-        to.transfer(amount);
+        // low-level call (not transfer) so contract recipients with non-trivial receive() succeed
+        (bool ok,) = to.call{value: amount}("");
+        require(ok, "7702Caller: withdraw failed");
     }
 
     /**

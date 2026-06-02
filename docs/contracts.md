@@ -29,7 +29,7 @@ graph LR
 ## Important Patterns
 
 ### Offset encoding is hand-rolled bit packing
-The canonical definition lives in `js/offset-schema.json` — the Solidity constants
+The canonical definition lives in `schema/offset-schema.json` — the Solidity constants
 in `src/MulticallScripter.sol` must match it exactly.
 
 There are 5 call type flags, each with a unique bit layout packed into one `uint256`:

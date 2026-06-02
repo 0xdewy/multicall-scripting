@@ -20,7 +20,9 @@
     "tx-builder": "./cli.js"
   },
   "scripts": {
-    "build": "node cli.js"
+    "build": "node cli.js",
+    "sync:schema": "node scripts/sync-schema.js",
+    "prepack": "node scripts/sync-schema.js"
   },
   "keywords": [
     "multicall",

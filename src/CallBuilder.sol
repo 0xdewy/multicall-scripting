@@ -1,5 +1,4 @@
 import {Constants} from "./MulticallScripter.sol";
-//import {Test, console} from "forge-std/Test.sol";
 
 // SPDX-License-Identifier: GPL3
 pragma solidity ^0.8.28;
@@ -21,7 +20,8 @@ contract CallDecoder is Constants {
 
     // length of return data
     function getResultLength(uint256 offset) public pure returns (uint256 resLength) {
-        resLength = uint120(offset);
+        // explicit low-120-bit mask, symmetric with getMemTarget
+        resLength = offset & ((uint256(1) << 120) - 1);
     }
 }
 

@@ -88,6 +88,7 @@ sequenceDiagram
 
 - Solidity contracts deep dive → [docs/contracts.md](contracts.md)
 - JavaScript library deep dive → [docs/javascript.md](javascript.md)
+- Rust library deep dive → [docs/rust.md](rust.md)
 - Test patterns and suites → [docs/testing.md](testing.md)
 - Example strategy scripts → [docs/examples.md](examples.md)
 - Solidity conventions → [.claude/rules/solidity.md](../.claude/rules/solidity.md)

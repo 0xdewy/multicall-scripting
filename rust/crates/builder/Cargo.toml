@@ -1,0 +1,17 @@
+[package]
+name = "multicall-scripter"
+version = "0.1.0"
+description = "Build atomic multi-contract transactions with return-value chaining (mirrors js/index.js)"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+multicall-scripter-codec = { path = "../codec" }
+alloy-primitives = { workspace = true }
+alloy-json-abi = { workspace = true }
+alloy-dyn-abi = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

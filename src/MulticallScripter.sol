@@ -12,7 +12,6 @@ contract Constants {
     uint256 constant CALL_PARTIAL_RETURN_FLAG = 0xFB;
 
     uint256 constant PARTIAL_RETURN_MEM_TARGET_FLAG_INDIVIDUAL = 0xFFFFFFFFFF;
-    // TODO: does the compiler remove redundant flags??
     uint256 constant PARTIAL_RETURN_RES_LENGTH_FLAG = 0xFFFFFFFFFFFF;
     uint256 constant PARTIAL_RETURN_RET_OFFSET_FLAG = 0xFFFFFFFFFFFF;
 
@@ -55,6 +54,11 @@ contract MulticallScripter is Constants {
             // update free memory
             mstore(0x40, add(calldataOffset, totalCalldataBytes))
 
+            // end of the pre-allocated calldata region. Return-data writes (which splice into
+            // later calls' calldata) must stay within it. Captured once as a fixed bound because
+            // the partial-return branches advance 0x40 for scratch space.
+            let calldataEnd := mload(0x40)
+
             let i := 0
             // loop through all calls and execute in order
             for {} lt(i, calldatas.length) { i := add(i, 1) } {
@@ -67,7 +71,8 @@ contract MulticallScripter is Constants {
                 let lengthPadded := shl(5, shr(5, add(calldataLen, 31)))
                 // preserve the start location of this calls calldata
                 let dataStart := add(calldataOffset, 0x20)
-                // TODO: fuzz test this
+                // advance past this call's [length][padded data] (covered by test_fuzz_partialReturn
+                // and test_staticcall_with_unpadded_calldata)
                 calldataOffset := add(calldataOffset, add(0x20, lengthPadded))
                 // 0 = no value sent, 0x01-0xFFF0 = index into params
                 let callType := shr(VALUE_OFFSET, offset)
@@ -77,6 +82,13 @@ contract MulticallScripter is Constants {
                     let returnSize := shr(136, shl(136, offset))
                     // clear upper bits and retrieve return data offset
                     let returnOffset := add(add(calldataOffset, 0x20), shr(136, shl(16, offset)))
+
+                    // bounds check: a return-data write must not run past the calldata region
+                    // and corrupt unrelated memory. Skipped when returnSize == 0 (no write).
+                    if and(gt(returnSize, 0), gt(add(returnOffset, returnSize), calldataEnd)) {
+                        mstore(0x00, 0xd558ad4e) // InvalidMemoryTarget()
+                        revert(0x1c, 0x04)
+                    }
 
                     // make staticcall and bubble up revert
                     if iszero(staticcall(gas(), target, dataStart, calldataLen, returnOffset, returnSize)) {
@@ -97,6 +109,13 @@ contract MulticallScripter is Constants {
 
                     // clear upper bits and retrieve return data offset
                     let returnOffset := add(add(calldataOffset, 0x20), shr(136, shl(16, offset)))
+
+                    // bounds check: a return-data write must not run past the calldata region
+                    // and corrupt unrelated memory. Skipped when returnSize == 0 (no write).
+                    if and(gt(returnSize, 0), gt(add(returnOffset, returnSize), calldataEnd)) {
+                        mstore(0x00, 0xd558ad4e) // InvalidMemoryTarget()
+                        revert(0x1c, 0x04)
+                    }
 
                     // call(gas, address, value, argsOffset, argssize, retOffset, returnDataSize)
                     if iszero(call(gas(), target, msgValue, dataStart, calldataLen, returnOffset, returnSize)) {
@@ -174,7 +193,8 @@ contract MulticallScripter is Constants {
                         mcopy(memTarget, returnDataOffset, resLength)
                         continue
                     }
-                    // TODO: is it worth it to clear memory??
+                    // No need to clear the scratch return-data region: it lives above the
+                    // calldata region and is never read as calldata by a subsequent call.
                     continue
                 }
 

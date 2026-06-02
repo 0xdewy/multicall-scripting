@@ -168,10 +168,15 @@ assert(built.offsets[0].toString().includes(expected));
    - `returnDataSize`: max 65535 bytes
 
 ### Consistency Requirements
-1. **Bit alignment must match** between Solidity and JavaScript
-2. **Constants must be identical** in both layers
-3. **Test coverage should be parallel** for both layers
+1. **Bit alignment must match** across Solidity, JavaScript, and Rust (`rust/`)
+2. **Constants must be identical** in all three layers — `schema/offset-schema.json` is the single
+   source of truth (JS reads it, Rust codegen's from it via `rust/crates/codec/build.rs`, Solidity
+   mirrors it by hand). Edit the schema first, then regenerate golden vectors
+   (`bun js/scripts/gen-test-vectors.js`).
+3. **Test coverage should be parallel** across layers (incl. `cargo test` and the `RustLibrary`
+   FFI test)
 4. **Error handling should be consistent** across interfaces
+5. **See `docs/rust.md`** for the Rust layer's crate map, parity model, and current scope/limits
 
 ## 🔍 Troubleshooting Guide
 

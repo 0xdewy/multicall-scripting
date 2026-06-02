@@ -126,6 +126,10 @@ contract GasBenchmarksTest is Test, CallBuilder {
             targets.push(address(bufReturn));
             offsets.push(staticCall(0x04, payload));
         }
+        // sink call: receives the final copy so no write lands past the calldata region
+        calldatas.push(largeCalldata);
+        targets.push(address(bufReturn));
+        offsets.push(staticCall(0, 0));
 
         uint256 gas = gasUsedFromExecute();
         console2.log("marshalling-320B (5-chain): ", gas);
@@ -149,6 +153,10 @@ contract GasBenchmarksTest is Test, CallBuilder {
             targets.push(address(bufReturn));
             offsets.push(staticCall(0x04, payload));
         }
+        // sink call: receives the final copy so no write lands past the calldata region
+        calldatas.push(largeCalldata);
+        targets.push(address(bufReturn));
+        offsets.push(staticCall(0, 0));
 
         uint256 gas = gasUsedFromExecute();
         console2.log("marshalling-1024B (5-chain): ", gas);

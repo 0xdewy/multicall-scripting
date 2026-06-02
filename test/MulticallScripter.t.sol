@@ -491,6 +491,37 @@ contract MulticallScriptTest is Test, CallBuilder, MulticallScripter {
         multicall.execute(targets, offsets, calldatas, values);
         assertEq(simpleReturn.getUint(), 4);
     }
+
+    // A regular static call whose return-data write (memTarget + resultLength) runs past the
+    // pre-allocated calldata region must revert instead of silently corrupting memory (AUDIT F1).
+    function test_regular_return_out_of_bounds() public {
+        // producing call returns 0x20 bytes; memTarget is far beyond the (~160 byte) calldata region
+        calldatas.push(abi.encodeWithSelector(SimpleReturn.getConstant.selector));
+        targets.push(address(simpleReturn));
+        offsets.push(staticCall(0x10000, 0x20));
+
+        // consuming call (gives the batch a later region; the write still lands out of bounds)
+        calldatas.push(abi.encodeWithSelector(SimpleReturn.setUint.selector, 0x0));
+        targets.push(address(simpleReturn));
+        offsets.push(stateChangingCall());
+
+        vm.expectRevert(MulticallScripter.InvalidMemoryTarget.selector);
+        multicall.execute(targets, offsets, calldatas, values);
+    }
+
+    // Companion: an in-bounds chain (write into the next call's region) still succeeds.
+    function test_regular_return_in_bounds_ok() public {
+        calldatas.push(abi.encodeWithSelector(SimpleReturn.getConstant.selector));
+        targets.push(address(simpleReturn));
+        offsets.push(staticCall(0x4, 0x20));
+
+        calldatas.push(abi.encodeWithSelector(SimpleReturn.setUint.selector, 0x0));
+        targets.push(address(simpleReturn));
+        offsets.push(stateChangingCall());
+
+        multicall.execute(targets, offsets, calldatas, values);
+        assertEq(simpleReturn.getUint(), 69);
+    }
 }
 
 // Minimal external wrapper so vm.expectRevert can be used on the internal
