@@ -6,13 +6,15 @@
   "main": "./index.js",
   "exports": {
     ".": "./index.js",
-    "./abi": "./abi.js"
+    "./abi": "./abi.js",
+    "./enso": "./enso.js"
   },
   "files": [
     "index.js",
     "encoding.js",
     "offset-schema.json",
     "abi.js",
+    "enso.js",
     "cli.js"
   ],
   "bin": {

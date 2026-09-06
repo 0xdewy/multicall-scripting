@@ -89,6 +89,85 @@ The declared length must be exact. The executor reverts (`InsufficientReturnData
 returns too few bytes; incorrect lengths can also make the consumer read adjacent arguments.
 The declaration is a caller precondition, not a runtime length check.
 
+### Enso route translation
+
+The optional adapter uses Enso to find a route, then replaces Enso's Weiroll executor with
+MulticallScripter. Request the `delegate` strategy: its `executeShortcut` calldata contains the
+underlying command and state arrays for execution in the EOA's context.
+
+```javascript
+import {
+  buildEnsoDelegateBatch, inspectEnsoDelegateRoute, verifyEnsoCompatibility,
+} from "multicall-scripter/enso";
+
+const route = await enso.getRouteData({
+  chainId: 1,
+  fromAddress: EXECUTOR,
+  routingStrategy: "delegate",
+  // tokenIn, tokenOut, amountIn, receiver, slippage...
+});
+await verifyEnsoCompatibility(publicClient); // exact mainnet implementation bytecode
+const request = { caller: EXECUTOR, routingStrategy: "delegate", chainId: 1 };
+const inspection = inspectEnsoDelegateRoute(route, request);
+const { batch, value, routeHash } = buildEnsoDelegateBatch(route, {
+  ...request,
+  policy: {
+    maxEthSpend: amountIn,
+    expectedInputToken: ETH,
+    expectedOutputToken: USDC,
+    expectedReceiver: RECEIVER,
+    allowedTargets: APPROVED_PROTOCOL_TARGETS, // maintained independently of Enso
+    allowedApprovals: [
+      // { token, operator, maxAmount, allowAll?: false }
+    ],
+  },
+});
+
+// Fork-simulate the original Enso route and `batch` at the same recent block, then call
+// assertEnsoSimulation({ routeHash, chainId: 1, forkBlock, enso, scripter,
+//   minOutput, maxInput: amountIn }) before presenting or signing the transaction.
+await walletClient.writeContract({
+  address: EXECUTOR, abi: EXECUTOR_ABI, functionName: "execute",
+  args: [batch.targets, batch.offsets, batch.calldatas, batch.msgValues],
+  value,
+});
+```
+
+`caller` must match every returned `tx.from`, and the main `tx.to` must be that delegated EOA.
+The decoder is pinned to Ethereum, Enso Weiroll 1.4.1 and the reviewed EIP-7702 implementation
+code hash. An Enso upgrade fails the compatibility check until this package is reviewed and
+updated. The adapter
+decodes the Enso transaction but does not call its `tx.to`: each supported Weiroll command target
+is placed directly in the Scripter batch. It fails closed when a route uses semantics that the
+fixed offset format cannot preserve, including delegatecalls, runtime-sized return values,
+computed ETH values, state replacement, and Weiroll's composite state indices.
+
+Inspection only decodes; it does not authorize execution. `buildEnsoDelegateBatch` requires a
+maximum aggregate ETH spend, expected input/output assets and recipient, an independent target
+allowlist, and explicit bounds for every decoded ERC-20/ERC-721 approval. The address checks are
+useful tripwires, not semantic proof of arbitrary calldata. Before signing, simulate both the
+original Enso transaction and translated batch from the same state, compare exact input/output
+balance deltas with `assertEnsoSimulation`, enforce the quote's minimum output and bind the result
+to `routeHash`. Use a fresh block and quote; never derive the production allowlist from
+`inspection.targets`.
+
+The approval scanner recognizes `approve`, `increaseAllowance`, and `setApprovalForAll`.
+EIP-2612, DAI-style permit and Permit2 authorization are rejected because their authority cannot
+be represented by this policy. Protocol-specific authorization hidden behind another selector is
+controlled only by the target allowlist and simulation.
+
+Enso requires a consumed scalar return to be exactly 32 bytes; Scripter requires at least 32, so
+differential simulation remains the compatibility check for each concrete route.
+When one scalar feeds more than three arguments, the adapter expands the fan-out through the
+identity precompile; this preserves the fixed offset schema and avoids another deployed contract.
+The returned outer `value` follows Enso's transactions, while individual calls may spend the EOA's
+existing ETH balance. Policy caps the sum of `batch.msgValues`, including pre-transactions.
+
+For ERC-20 input, approvals and funding must belong to the execution account. A public bare
+executor must receive tokens inside the same atomic batch and must not retain approvals or assets.
+EIP-7702 is the natural path when the EOA already owns the input tokens. Cross-chain routes only
+initiate work on the source chain; destination execution cannot be composed into the same batch.
+
 ## Rules
 
 - **Successful calls can return `false`.** The executor propagates EVM reverts; it does not interpret ERC-20 boolean results. Scripts must enforce their own success conditions.
@@ -256,6 +335,15 @@ prints the fork block, deploys all three contracts, checks a second deployment r
 - a late slippage failure rolls back the swaps, balances and approvals;
 - a real EIP-7702 authorization, self-call, signed relayed batch and rejected replay work;
 - a deployment rerun rejects mismatched code, and both Solidity mainnet-fork swaps pass.
+
+If `ENSO_API_KEY` is already exported, the rehearsal also requests live Enso `delegate` routes.
+It executes each underlying command program through Enso's
+EIP-7702 VM and its translated Scripter batch from identical fork state, asserts identical output
+and `minAmountOut`, and reports the executor gas difference. The live matrix also tries vault and
+LP zaps plus 2, 4, and 8-leg swap bundles, reporting the largest translated program and the first
+unsupported Weiroll feature instead of hiding the boundary. The script accepts an exported key or
+passes an existing `.env` directly to Bun without sourcing it into the shell or printing it.
+`.env` is ignored by Git. Without either source, this optional live check reports `SKIP`.
 
 The process uses public Anvil test accounts and sends transactions only to its own local node.
 Historical blocks may require an archive RPC; public endpoints can impose rate or history limits.

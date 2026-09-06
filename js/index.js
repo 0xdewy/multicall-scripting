@@ -7,7 +7,7 @@
 // pointers of the encoded calldata. Anything whose position cannot be known before execution
 // (a second dynamic value, arrays of dynamic elements) is rejected instead of guessed.
 
-import { encodeFunctionData, getAbiItem } from "viem";
+import { encodeFunctionData, getAbiItem, getAddress } from "viem";
 import {
     STATIC_CALL_FLAG,
     CALL_FLAG,
@@ -25,6 +25,29 @@ const WORD = 32;
 const pad32 = (n) => Math.ceil(n / WORD) * WORD;
 // bytes a call occupies in the executor's calldata region: [length word][data padded to 32]
 const regionSize = (calldataHex) => WORD + pad32((calldataHex.length - 2) / 2);
+
+function uint256(value, label) {
+    if (!["bigint", "string", "number"].includes(typeof value)
+        || (typeof value === "string" && value.trim() === "")) throw new Error(`${label} must fit uint256`);
+    if (typeof value === "number" && !Number.isSafeInteger(value)) throw new Error("Use BigInt or a string for large integers");
+    let parsed;
+    try { parsed = BigInt(value); }
+    catch { throw new Error(`${label} must fit uint256`); }
+    if (parsed < 0n || parsed >= (1n << 256n)) throw new Error(`${label} must fit uint256`);
+    return parsed;
+}
+
+function address(value) {
+    try { return getAddress(value); }
+    catch { throw new Error(`Invalid target address: ${value}`); }
+}
+
+function bytes(value) {
+    if (typeof value !== "string" || !/^0x(?:[0-9a-fA-F]{2})*$/.test(value)) {
+        throw new Error("Calldata must be an even-length hex string");
+    }
+    return value;
+}
 
 // =============================== ABI layout ===============================
 // `param` is an ABI parameter object: { type, name?, components? }
@@ -289,11 +312,7 @@ export class TransactionBuilder {
             throw new Error(`Argument count mismatch: ${args.length} vs ${fn.inputs.length}`);
         }
         const isStatic = fn.stateMutability === "view" || fn.stateMutability === "pure";
-        if (!["bigint", "string", "number"].includes(typeof msgValue)
-            || (typeof msgValue === "string" && msgValue.trim() === "")) throw new Error("msg.value must fit uint256");
-        if (typeof msgValue === "number" && !Number.isSafeInteger(msgValue)) throw new Error("Use BigInt or a string for large integers");
-        msgValue = BigInt(msgValue);
-        if (msgValue < 0n || msgValue >= (1n << 256n)) throw new Error("msg.value must fit uint256");
+        msgValue = uint256(msgValue, "msg.value");
         if (isStatic && msgValue > 0n) throw new Error(`${functionName} is ${fn.stateMutability}; it cannot receive msg.value`);
 
         const refs = [];
