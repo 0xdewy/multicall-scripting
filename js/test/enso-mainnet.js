@@ -51,6 +51,7 @@ for (const {symbol, token} of routes) {
     });
     const response = await fetch(`https://api.enso.build/api/v1/shortcuts/route?${query}`, {
         headers: {Authorization: `Bearer ${apiKey}`, Accept: "application/json"},
+        signal: AbortSignal.timeout(30_000),
     });
     if (!response.ok) throw new Error(`Enso ${symbol} route request failed with HTTP ${response.status}`);
     const route = await response.json();

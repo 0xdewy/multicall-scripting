@@ -28,6 +28,7 @@ FORK_LOCAL="http://127.0.0.1:$FORK_PORT"
 FORK_SENDER=0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266
 FORK_LOG=$(mktemp /tmp/multicall-anvil.XXXXXX.log)
 anvil --fork-url "$FORK_UPSTREAM" --fork-block-number "$FORK_BLOCK" \
+  --timeout 15000 --retries 2 \
   --chain-id 31337 --host 127.0.0.1 --port "$FORK_PORT" --silent >"$FORK_LOG" 2>&1 &
 FORK_PID=$!
 trap 'kill "$FORK_PID" 2>/dev/null || true; wait "$FORK_PID" 2>/dev/null || true' EXIT
@@ -48,14 +49,18 @@ if [[ "$FORK_READY" != true ]]; then
 fi
 printf 'Mainnet fork block: %s; local chain: 31337; RPC: %s\n' "$FORK_BLOCK" "$FORK_LOCAL"
 # Broadcast only to the Anvil process created above. No mainnet signer or private key is loaded.
-DEPLOY_7702=true script/deploy.sh "$FORK_LOCAL" --sender "$FORK_SENDER" --unlocked --broadcast
+echo '[1/4] Deploying and checking release bytecode'
+DEPLOY_7702=true script/deploy.sh "$FORK_LOCAL" --rpc-timeout 30 --sender "$FORK_SENDER" --unlocked --broadcast
 # Idempotence: the second run must accept the existing exact bytecode and send no deployments.
-DEPLOY_7702=true script/deploy.sh "$FORK_LOCAL" --sender "$FORK_SENDER" --unlocked --broadcast
+DEPLOY_7702=true script/deploy.sh "$FORK_LOCAL" --rpc-timeout 30 --sender "$FORK_SENDER" --unlocked --broadcast
+echo '[2/4] Running protocol and EIP-7702 rehearsal'
 bun js/test/mainnet.js "$FORK_LOCAL"
 if [[ -n "${ENSO_API_KEY:-}" ]]; then
+  echo '[3/4] Comparing live Enso routes directly and through Scripter'
   bun js/test/enso-mainnet.js "$FORK_LOCAL"
 else
-  echo "SKIP Enso live route (ENSO_API_KEY is not exported)"
+  echo '[3/4] SKIP Enso live route (ENSO_API_KEY is not exported)'
 fi
 # Use the upstream directly: nested forking through Anvil can serialize remote storage fetches.
+echo '[4/4] Running Solidity fork tests'
 ETH_RPC_URL="$FORK_UPSTREAM" FORK_BLOCK="$FORK_BLOCK" forge test --match-contract CallBuilderTest --threads 1 -vv
