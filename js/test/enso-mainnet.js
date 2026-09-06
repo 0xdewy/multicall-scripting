@@ -1,5 +1,5 @@
-// Optional authenticated Enso stress rehearsal. The caller supplies ENSO_API_KEY in the process
-// environment; this script never reads dotenv files or prints the key.
+// Optional authenticated Enso stress rehearsal. rehearse.sh supplies ENSO_API_KEY from its
+// environment or through Bun's --env-file; this script never prints the key.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {

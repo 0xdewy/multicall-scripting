@@ -60,8 +60,11 @@ bun js/test/enso-differential.js "$FORK_LOCAL"
 if [[ -n "${ENSO_API_KEY:-}" ]]; then
   echo '[4/5] Translating live Enso routes and comparing executors'
   bun js/test/enso-mainnet.js "$FORK_LOCAL"
+elif [[ -f .env ]]; then
+  echo '[4/5] Translating live Enso routes and comparing executors (credentials from .env)'
+  bun --env-file=.env js/test/enso-mainnet.js "$FORK_LOCAL"
 else
-  echo '[4/5] SKIP Enso live route (ENSO_API_KEY is not exported)'
+  echo '[4/5] SKIP Enso live route (ENSO_API_KEY is neither exported nor present in .env)'
 fi
 # Use the upstream directly: nested forking through Anvil can serialize remote storage fetches.
 echo '[5/5] Running Solidity fork tests'

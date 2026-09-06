@@ -303,8 +303,9 @@ It executes each underlying command program through Enso's
 EIP-7702 VM and its translated Scripter batch from identical fork state, asserts identical output
 and `minAmountOut`, and reports the executor gas difference. The live matrix also tries vault and
 LP zaps plus 2, 4, and 8-leg swap bundles, reporting the largest translated program and the first
-unsupported Weiroll feature instead of hiding the boundary. The script never sources `.env`;
-`.env` is ignored by Git. Without the exported key, this optional live check reports `SKIP`.
+unsupported Weiroll feature instead of hiding the boundary. The script accepts an exported key or
+passes an existing `.env` directly to Bun without sourcing it into the shell or printing it.
+`.env` is ignored by Git. Without either source, this optional live check reports `SKIP`.
 
 The process uses public Anvil test accounts and sends transactions only to its own local node.
 Historical blocks may require an archive RPC; public endpoints can impose rate or history limits.
