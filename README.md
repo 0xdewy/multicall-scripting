@@ -89,24 +89,24 @@ The declared length must be exact. The executor reverts (`InsufficientReturnData
 returns too few bytes; incorrect lengths can also make the consumer read adjacent arguments.
 The declaration is a caller precondition, not a runtime length check.
 
-### Enso router responses
+### Enso route translation (experimental)
 
-Enso already returns a complete transaction, so wrap its `router` response as raw calls rather
-than decoding its internal route. The adapter preserves every pre-transaction, the main
-transaction, calldata, order, and ETH value:
+The optional adapter uses Enso to find a route, then replaces Enso's Weiroll executor with
+MulticallScripter. Request the `delegate` strategy: its `executeShortcut` calldata contains the
+underlying command and state arrays for execution in the EOA's context.
 
 ```javascript
-import { buildEnsoRouterBatch } from "multicall-scripter/enso";
+import { buildEnsoDelegateBatch } from "multicall-scripter/enso";
 
 const route = await enso.getRouteData({
   chainId: 1,
   fromAddress: EXECUTOR,
-  routingStrategy: "router",
+  routingStrategy: "delegate",
   // tokenIn, tokenOut, amountIn, receiver, slippage...
 });
-const { batch, value } = buildEnsoRouterBatch(route, {
+const { batch, value } = buildEnsoDelegateBatch(route, {
   caller: EXECUTOR,
-  routingStrategy: "router",
+  routingStrategy: "delegate",
 });
 
 await walletClient.writeContract({
@@ -116,10 +116,14 @@ await walletClient.writeContract({
 });
 ```
 
-`caller` must match every returned `tx.from`. For the bare executor it is the executor address;
-under EIP-7702 it is the delegating EOA. The adapter rejects Enso `delegate` responses because
-those require the smart wallet to use `delegatecall`, which this project deliberately excludes.
-Use Enso's `router` strategy and send the returned `tx.to`; do not hardcode an Enso address.
+`caller` must match every returned `tx.from`; under EIP-7702 it is the delegating EOA. The adapter
+decodes the Enso transaction but does not call its `tx.to`: each supported Weiroll command target
+is placed directly in the Scripter batch. It fails closed when a route uses semantics that the
+fixed offset format cannot preserve, including delegatecalls, runtime-sized return values,
+computed ETH values, state replacement, and Weiroll's composite state indices. Treat this as a
+route-dependent experiment until the exact live response passes simulation and differential
+execution against Enso's VM. Enso also requires a consumed scalar return to be exactly 32 bytes;
+Scripter requires at least 32, so simulation is the compatibility check for each concrete route.
 
 For ERC-20 input, approvals and funding must belong to the execution account. A public bare
 executor must receive tokens inside the same atomic batch and must not retain approvals or assets.
@@ -294,10 +298,10 @@ prints the fork block, deploys all three contracts, checks a second deployment r
 - a real EIP-7702 authorization, self-call, signed relayed batch and rejected replay work;
 - a deployment rerun rejects mismatched code, and both Solidity mainnet-fork swaps pass.
 
-If `ENSO_API_KEY` is already exported, the rehearsal also fetches live Enso ETH → USDC and
-ETH → DAI `router` routes, converts them into Scripter batches, executes them on the fork, checks
-`minAmountOut`, and compares output and gas against the identical direct Enso transactions from
-an Anvil snapshot. The script never sources `.env`;
+If `ENSO_API_KEY` is already exported, the rehearsal also requests live Enso `delegate`
+ETH → USDC and ETH → DAI routes. It executes each underlying command program through Enso's
+EIP-7702 VM and its translated Scripter batch from identical fork state, asserts identical output
+and `minAmountOut`, and reports the executor gas difference. The script never sources `.env`;
 `.env` is ignored by Git. Without the exported key, this optional live check reports `SKIP`.
 
 The process uses public Anvil test accounts and sends transactions only to its own local node.

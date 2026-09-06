@@ -370,22 +370,6 @@ export class TransactionBuilder {
         return positional;
     }
 
-    /** Append already-encoded calldata, such as a transaction returned by a routing API. */
-    addRawCall(target, calldata, msgValue = 0n) {
-        this.calls.push({
-            target: address(target),
-            fnCalldata: bytes(calldata),
-            calltype_flag: CALL_FLAG,
-            memTargets: [],
-            resultLengths: [],
-            returnOffsets: [],
-            returnDataSize: 0,
-            msgValue: uint256(msgValue, "msg.value"),
-            functionName: null,
-        });
-        return this;
-    }
-
     /** The four inputs for MulticallScripter.execute(targets, offsets, calldatas, msgValues). */
     build() {
         const targets = [];

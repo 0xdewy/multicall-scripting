@@ -6,7 +6,7 @@ import {
     createPublicClient, createWalletClient, getContractAddress, http, parseAbi, parseEther, toHex,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { buildEnsoRouterBatch } from "../enso.js";
+import { buildEnsoDelegateBatch } from "../enso.js";
 
 const rpc = process.argv[2];
 if (!rpc) throw new Error("Usage: ENSO_API_KEY=... bun js/test/enso-mainnet.js ANVIL_FORK_RPC");
@@ -28,6 +28,8 @@ const delegateAddress = getContractAddress({
     salt: toHex(0x4d756c746963616c6c5363726970746572n, {size: 32}),
     bytecode: artifact.bytecode.object,
 });
+const ENSO_EIP7702 = "0x0aeb78d3f961b0394e4a3b94537b543e9e57bab1";
+assert.ok((await client.getCode({address: ENSO_EIP7702})).length > 2, "Enso EIP-7702 implementation is not deployed on this fork");
 assert.equal((await client.getCode({address: account.address})).toLowerCase(),
     `0xef0100${delegateAddress.slice(2).toLowerCase()}`, "rehearsal account must already delegate to SevenSevenZeroTwoCaller");
 
@@ -43,7 +45,7 @@ for (const {symbol, token} of routes) {
         chainId: "1",
         fromAddress: account.address,
         receiver,
-        routingStrategy: "router",
+        routingStrategy: "delegate",
         tokenIn: "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE",
         tokenOut: token,
         amountIn: amountIn.toString(),
@@ -55,22 +57,30 @@ for (const {symbol, token} of routes) {
     });
     if (!response.ok) throw new Error(`Enso ${symbol} route request failed with HTTP ${response.status}`);
     const route = await response.json();
-    const {batch, value} = buildEnsoRouterBatch(route, {caller: account.address, routingStrategy: "router"});
+    const {batch, value, commandCount} = buildEnsoDelegateBatch(route, {
+        caller: account.address, routingStrategy: "delegate",
+    });
     assert.equal(value, amountIn, "Enso route must forward exactly the requested native input");
 
-    // Execute the exact response directly and through Scripter from identical Anvil state.
+    // Execute the same Weiroll program through Enso's EIP-7702 VM and through Scripter from
+    // identical state. anvil_setCode changes only the local fork and is reverted with the snapshot.
     const snapshot = await client.request({method: "evm_snapshot"});
+    await client.request({method: "anvil_setCode", params: [account.address, `0xef0100${ENSO_EIP7702.slice(2)}`]});
     const before = await client.readContract({address: token, abi: erc20, functionName: "balanceOf", args: [receiver]});
-    let directGas = 0n;
-    const directTransactions = [...(route.preTransactions ?? []).map(entry => entry.tx), route.tx];
-    for (const tx of directTransactions) {
-        const directReceipt = await client.waitForTransactionReceipt({hash: await wallet.sendTransaction({
+    let ensoGas = 0n;
+    for (const tx of (route.preTransactions ?? []).map(entry => entry.tx)) {
+        const preReceipt = await client.waitForTransactionReceipt({hash: await wallet.sendTransaction({
             to: tx.to, data: tx.data, value: BigInt(tx.value ?? 0), gas: 3_000_000n, chain: null,
         })});
-        assert.equal(directReceipt.status, "success");
-        directGas += directReceipt.gasUsed;
+        assert.equal(preReceipt.status, "success");
+        ensoGas += preReceipt.gasUsed;
     }
-    const directReceived = await client.readContract({address: token, abi: erc20, functionName: "balanceOf", args: [receiver]}) - before;
+    const ensoReceipt = await client.waitForTransactionReceipt({hash: await wallet.sendTransaction({
+        to: account.address, data: route.tx.data, value: BigInt(route.tx.value ?? 0), gas: 3_000_000n, chain: null,
+    })});
+    assert.equal(ensoReceipt.status, "success");
+    ensoGas += ensoReceipt.gasUsed;
+    const ensoReceived = await client.readContract({address: token, abi: erc20, functionName: "balanceOf", args: [receiver]}) - before;
     assert.equal(await client.request({method: "evm_revert", params: [snapshot]}), true);
 
     const wrappedBefore = await client.readContract({address: token, abi: erc20, functionName: "balanceOf", args: [receiver]});
@@ -86,9 +96,9 @@ for (const {symbol, token} of routes) {
     assert.equal(receipt.status, "success");
     const received = await client.readContract({address: token, abi: erc20, functionName: "balanceOf", args: [receiver]}) - wrappedBefore;
     const minimum = Array.isArray(route.minAmountOut) ? BigInt(route.minAmountOut[0]) : BigInt(route.minAmountOut);
-    assert.equal(received, directReceived, "direct and wrapped execution must produce identical output from identical state");
+    assert.equal(received, ensoReceived, "Enso and Scripter execution must produce identical output from identical state");
     assert.ok(received >= minimum, "received output must satisfy Enso's minAmountOut");
-    const delta = receipt.gasUsed - directGas;
-    const percent = Number(delta * 10_000n / directGas) / 100;
-    console.log(`PASS Enso ETH → ${symbol}: direct ${directGas} gas; Scripter ${receipt.gasUsed} gas; ${delta >= 0n ? "+" : ""}${delta} (${percent}%); output ${received}`);
+    const delta = receipt.gasUsed - ensoGas;
+    const percent = Number(delta * 10_000n / ensoGas) / 100;
+    console.log(`PASS Enso ETH → ${symbol}: ${commandCount} calls; Enso VM ${ensoGas} gas; Scripter ${receipt.gasUsed} gas; ${delta >= 0n ? "+" : ""}${delta} (${percent}%); output ${received}`);
 }
