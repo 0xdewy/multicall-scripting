@@ -1,360 +1,320 @@
-// SPDX-License-Identifier: GPL3
+// SPDX-License-Identifier: GPL-3.0
 pragma solidity ^0.8.28;
 
-import "forge-std/Test.sol";
-import "../src/7702Caller.sol";
+import {Test} from "forge-std/Test.sol";
+import {SevenSevenZeroTwoCaller} from "src/7702Caller.sol";
+import {MulticallScripter} from "src/MulticallScripter.sol";
+import {CallBuilder} from "./CallBuilder.sol";
 
 contract MockTarget {
     uint256 public value;
-    bool public called;
     address public caller;
     uint256 public callValue;
 
     function setValue(uint256 _value) external payable {
         value = _value;
-        called = true;
         caller = msg.sender;
         callValue = msg.value;
     }
-
-    function getValue() external view returns (uint256) {
-        return value;
-    }
-
-    function revertCall() external pure {
-        revert("MockTarget: intentional revert");
-    }
 }
 
-    uint256 constant AUTHORIZED_KEY = 0x789;
-    uint256 constant UNAUTHORIZED_KEY = 0xABC;
+/// @dev The EOA is simulated by etching the delegate's runtime code at the EOA address, which is
+/// what an EIP-7702 delegation designator resolves to at call time.
+contract SevenSevenZeroTwoCallerTest is Test, CallBuilder {
+    uint256 constant EOA_KEY = 0xA11CE;
+    uint256 constant OTHER_KEY = 0xB0B;
 
-contract SevenSevenZeroTwoCallerTest is Test {
-    SevenSevenZeroTwoCaller public wallet;
-    MockTarget public mockTarget;
-    address public entryPoint = address(0x123);
-    address public owner = address(0x456);
-    address public authorizedUser = vm.addr(AUTHORIZED_KEY);
-    address public unauthorizedUser = vm.addr(UNAUTHORIZED_KEY);
+    address eoa = vm.addr(EOA_KEY);
+    address relayer = address(0xEE);
+    SevenSevenZeroTwoCaller impl;
+    SevenSevenZeroTwoCaller account; // the EOA, running the delegate's code
+    MockTarget target;
+
+    address[] targets;
+    uint256[] offsets;
+    bytes[] calldatas;
+    uint256[] values;
 
     function setUp() public {
-        vm.startPrank(owner);
-        wallet = new SevenSevenZeroTwoCaller(entryPoint);
-        mockTarget = new MockTarget();
-        vm.stopPrank();
+        impl = new SevenSevenZeroTwoCaller();
+        vm.etch(eoa, address(impl).code);
+        account = SevenSevenZeroTwoCaller(payable(eoa));
+        target = new MockTarget();
+        vm.deal(eoa, 10 ether);
+        vm.deal(relayer, 1 ether);
 
-        // Add authorized user
-        vm.prank(owner);
-        wallet.addSigner(authorizedUser);
+        targets.push(address(target));
+        calldatas.push(abi.encodeWithSelector(MockTarget.setValue.selector, 42));
+        offsets.push(stateChangingCall());
     }
 
-    function testConstructor() public {
-        assertEq(wallet.entryPoint(), entryPoint);
-        assertTrue(wallet.isAuthorized(owner));
-        assertTrue(wallet.isAuthorized(authorizedUser));
-        assertFalse(wallet.isAuthorized(unauthorizedUser));
+    function _sign(uint256 key, uint256 nonce, uint256 deadline) internal view returns (bytes memory) {
+        bytes32 digest = account.hashExecute(targets, offsets, pack(calldatas), values, nonce, deadline);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(key, digest);
+        return abi.encodePacked(r, s, v);
     }
 
-    function testAddSigner() public {
-        address newSigner = address(0xDEF);
+    // ───────────────────────────── self-call path ─────────────────────────────
 
-        vm.prank(owner);
-        wallet.addSigner(newSigner);
+    function test_execute_as_self() public {
+        vm.prank(eoa);
+        account.execute(targets, offsets, pack(calldatas), values);
 
-        assertTrue(wallet.isAuthorized(newSigner));
+        assertEq(target.value(), 42);
+        assertEq(target.caller(), eoa, "calls must originate from the EOA");
     }
 
-    function testAddSignerUnauthorized() public {
-        address newSigner = address(0xDEF);
+    function test_execute_rejects_other_callers() public {
+        vm.prank(relayer);
+        vm.expectRevert(SevenSevenZeroTwoCaller.Unauthorized.selector);
+        account.execute(targets, offsets, pack(calldatas), values);
 
-        vm.prank(unauthorizedUser);
-        vm.expectRevert("7702Caller: unauthorized");
-        wallet.addSigner(newSigner);
+        vm.expectRevert(SevenSevenZeroTwoCaller.Unauthorized.selector);
+        account.execute(targets, offsets, pack(calldatas), values);
     }
 
-    function testRemoveSigner() public {
-        vm.prank(owner);
-        wallet.removeSigner(authorizedUser);
+    function test_execute_spends_account_balance() public {
+        offsets[0] = stateChangingCall(1);
+        values.push(1 ether);
 
-        assertFalse(wallet.isAuthorized(authorizedUser));
+        vm.prank(eoa);
+        account.execute(targets, offsets, pack(calldatas), values);
+
+        assertEq(target.callValue(), 1 ether);
+        assertEq(eoa.balance, 9 ether, "value comes from the account, nothing else leaves");
     }
 
-    function testRemoveSignerSelf() public {
-        vm.prank(owner);
-        vm.expectRevert("7702Caller: cannot remove self");
-        wallet.removeSigner(owner);
+    function test_receives_eth() public {
+        (bool ok,) = eoa.call{value: 1 ether}("");
+        assertTrue(ok);
+        assertEq(eoa.balance, 11 ether);
     }
 
-    function testExecuteCall() public {
-        uint256 testValue = 42;
+    // ───────────────────────────── signature path ─────────────────────────────
 
-        vm.prank(authorizedUser);
-        wallet.executeCall(address(mockTarget), 0, abi.encodeWithSelector(MockTarget.setValue.selector, testValue));
+    function test_execute_with_signature() public {
+        bytes memory sig = _sign(EOA_KEY, 0, block.timestamp + 100);
 
-        assertEq(mockTarget.value(), testValue);
-        assertTrue(mockTarget.called());
-        assertEq(mockTarget.caller(), address(wallet));
+        vm.prank(relayer);
+        account.executeWithSignature(targets, offsets, pack(calldatas), values, block.timestamp + 100, sig);
+
+        assertEq(target.value(), 42);
+        assertEq(target.caller(), eoa);
+        assertEq(account.nonce(), 1);
     }
 
-    function testExecuteCallWithValue() public {
-        uint256 testValue = 42;
-        uint256 ethValue = 1 ether;
+    function testFuzz_previous_signature_domains_rejected(uint8 previous) public {
+        previous = uint8(bound(previous, 1, 2));
+        uint256 deadline = block.timestamp + 100;
+        bytes32 oldDomain = keccak256(
+            abi.encode(
+                keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
+                keccak256("MulticallScripter7702"),
+                keccak256(bytes(previous == 1 ? "1" : "2")),
+                block.chainid,
+                eoa
+            )
+        );
+        bytes32 batchHash = keccak256(abi.encode(targets, offsets, pack(calldatas), values));
+        bytes32 structHash = keccak256(abi.encode(account.EXECUTE_TYPEHASH(), batchHash, uint256(0), deadline));
+        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", oldDomain, structHash));
+        (uint8 v, bytes32 r, bytes32 sigS) = vm.sign(EOA_KEY, digest);
+        vm.expectRevert(SevenSevenZeroTwoCaller.InvalidSignature.selector);
+        account.executeWithSignature(targets, offsets, pack(calldatas), values, deadline, abi.encodePacked(r, sigS, v));
+        assertEq(account.nonce(), 0);
+    }
 
-        vm.deal(address(wallet), ethValue);
+    function test_signature_covers_frame_padding() public {
+        uint256 deadline = block.timestamp + 100;
+        bytes memory sig = _sign(EOA_KEY, 0, deadline);
+        bytes memory script = pack(calldatas);
+        script[script.length - 1] = 0x01;
+        vm.expectRevert(SevenSevenZeroTwoCaller.InvalidSignature.selector);
+        account.executeWithSignature(targets, offsets, script, values, deadline, sig);
+        assertEq(account.nonce(), 0);
+    }
 
-        vm.prank(authorizedUser);
-        wallet.executeCall(
-            address(mockTarget), ethValue, abi.encodeWithSelector(MockTarget.setValue.selector, testValue)
+    function test_signature_cannot_be_replayed() public {
+        uint256 deadline = block.timestamp + 100;
+        bytes memory sig = _sign(EOA_KEY, 0, deadline);
+        account.executeWithSignature(targets, offsets, pack(calldatas), values, deadline, sig);
+
+        vm.expectRevert(SevenSevenZeroTwoCaller.InvalidSignature.selector);
+        account.executeWithSignature(targets, offsets, pack(calldatas), values, deadline, sig);
+    }
+
+    function test_signature_expired() public {
+        bytes memory sig = _sign(EOA_KEY, 0, block.timestamp - 1);
+        vm.expectRevert(SevenSevenZeroTwoCaller.SignatureExpired.selector);
+        account.executeWithSignature(targets, offsets, pack(calldatas), values, block.timestamp - 1, sig);
+    }
+
+    function test_signature_from_other_key_rejected() public {
+        bytes memory sig = _sign(OTHER_KEY, 0, block.timestamp + 100);
+        vm.expectRevert(SevenSevenZeroTwoCaller.InvalidSignature.selector);
+        account.executeWithSignature(targets, offsets, pack(calldatas), values, block.timestamp + 100, sig);
+    }
+
+    function test_signature_bound_to_batch() public {
+        bytes memory sig = _sign(EOA_KEY, 0, block.timestamp + 100);
+        calldatas[0] = abi.encodeWithSelector(MockTarget.setValue.selector, 1337);
+
+        vm.expectRevert(SevenSevenZeroTwoCaller.InvalidSignature.selector);
+        account.executeWithSignature(targets, offsets, pack(calldatas), values, block.timestamp + 100, sig);
+    }
+
+    function test_signature_bound_to_values() public {
+        bytes memory sig = _sign(EOA_KEY, 0, block.timestamp + 100);
+        values.push(1 ether);
+
+        vm.expectRevert(SevenSevenZeroTwoCaller.InvalidSignature.selector);
+        account.executeWithSignature(targets, offsets, pack(calldatas), values, block.timestamp + 100, sig);
+    }
+
+    function test_signature_bound_to_account() public {
+        // same key, same batch, but a signature produced for the implementation's domain
+        bytes32 digest = impl.hashExecute(targets, offsets, pack(calldatas), values, 0, block.timestamp + 100);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(EOA_KEY, digest);
+
+        vm.expectRevert(SevenSevenZeroTwoCaller.InvalidSignature.selector);
+        account.executeWithSignature(
+            targets, offsets, pack(calldatas), values, block.timestamp + 100, abi.encodePacked(r, s, v)
+        );
+        assertTrue(impl.domainSeparator() != account.domainSeparator());
+    }
+
+    function test_malformed_signature_rejected() public {
+        vm.expectRevert(SevenSevenZeroTwoCaller.InvalidSignature.selector);
+        account.executeWithSignature(targets, offsets, pack(calldatas), values, block.timestamp + 100, hex"deadbeef");
+    }
+
+    // A relayer's unspent msg.value goes back to the relayer, never into the account.
+    function test_relayer_overpayment_refunded() public {
+        bytes memory sig = _sign(EOA_KEY, 0, block.timestamp + 100);
+
+        vm.prank(relayer);
+        account.executeWithSignature{value: 0.5 ether}(
+            targets, offsets, pack(calldatas), values, block.timestamp + 100, sig
         );
 
-        assertEq(mockTarget.value(), testValue);
-        assertEq(mockTarget.callValue(), ethValue);
+        assertEq(relayer.balance, 1 ether);
+        assertEq(eoa.balance, 10 ether);
     }
 
-    function testExecuteCallUnauthorized() public {
-        vm.prank(unauthorizedUser);
-        vm.expectRevert("7702Caller: unauthorized");
-        wallet.executeCall(address(mockTarget), 0, abi.encodeWithSelector(MockTarget.setValue.selector, 42));
+    function test_failed_call_reverts_and_keeps_nonce() public {
+        calldatas[0] = abi.encodeWithSignature("doesNotExist()");
+        bytes memory sig = _sign(EOA_KEY, 0, block.timestamp + 100);
+
+        vm.expectRevert(bytes(""));
+        account.executeWithSignature(targets, offsets, pack(calldatas), values, block.timestamp + 100, sig);
+        assertEq(account.nonce(), 0);
     }
 
-    function testExecuteBatch() public {
-        address[] memory targets = new address[](2);
-        uint256[] memory offsets = new uint256[](2);
-        bytes[] memory calldatas = new bytes[](2);
-        uint256[] memory values = new uint256[](2);
-
-        // Encode offsets for regular calls (CALL_FLAG = 0xFE, VALUE_OFFSET = 248)
-        // offset = (CALL_FLAG << 248) | (msgValueIndex << 240) | (memTarget << 120) | resultLength
-        // For msgValueIndex = 0, memTarget = 0, resultLength = 0
-        uint256 callOffset = 0xFE00000000000000000000000000000000000000000000000000000000000000;
-
-        // First call: set value to 100
-        targets[0] = address(mockTarget);
-        offsets[0] = callOffset;
-        calldatas[0] = abi.encodeWithSelector(MockTarget.setValue.selector, 100);
-        values[0] = 0;
-
-        // Second call: set value to 200
-        targets[1] = address(mockTarget);
-        offsets[1] = callOffset;
-        calldatas[1] = abi.encodeWithSelector(MockTarget.setValue.selector, 200);
-        values[1] = 0;
-
-        vm.prank(authorizedUser);
-        wallet.execute(targets, offsets, calldatas, values);
-
-        assertEq(mockTarget.value(), 200); // Last call wins
+    function test_fuzz_signature_bound_to_chain(uint64 otherChain) public {
+        uint256 deadline = block.timestamp + 100;
+        bytes memory sig = _sign(EOA_KEY, 0, deadline);
+        vm.assume(otherChain != block.chainid);
+        vm.chainId(otherChain);
+        vm.expectRevert(SevenSevenZeroTwoCaller.InvalidSignature.selector);
+        account.executeWithSignature(targets, offsets, pack(calldatas), values, deadline, sig);
+        assertEq(account.nonce(), 0);
     }
 
-    function testExecuteBatchNotEntryPoint() public {
-        address[] memory targets = new address[](1);
-        uint256[] memory offsets = new uint256[](1);
-        bytes[] memory calldatas = new bytes[](1);
-        uint256[] memory values = new uint256[](1);
+    function test_fuzz_signature_bound_to_every_input(uint8 field) public {
+        uint256 deadline = block.timestamp + 100;
+        bytes memory sig = _sign(EOA_KEY, 0, deadline);
+        field = uint8(bound(field, 0, 3));
+        if (field == 0) targets[0] = address(0xBEEF);
+        if (field == 1) offsets[0] ^= 1;
+        if (field == 2) calldatas[0] = abi.encodeCall(target.setValue, (43));
+        if (field == 3) values.push(1);
+        vm.expectRevert(SevenSevenZeroTwoCaller.InvalidSignature.selector);
+        account.executeWithSignature(targets, offsets, pack(calldatas), values, deadline, sig);
+        assertEq(account.nonce(), 0);
+        assertEq(target.value(), 0);
+    }
 
-        targets[0] = address(mockTarget);
+    function test_migration_writing_slot_zero_cannot_revive_a_used_signature() public {
+        uint256 deadline = block.timestamp + 100;
+        bytes memory sig = _sign(EOA_KEY, 0, deadline);
+        account.executeWithSignature(targets, offsets, pack(calldatas), values, deadline, sig);
+        // Another delegate's ordinary Solidity storage can overwrite slot zero.
+        vm.store(eoa, bytes32(0), bytes32(0));
+        vm.expectRevert(SevenSevenZeroTwoCaller.InvalidSignature.selector);
+        account.executeWithSignature(targets, offsets, pack(calldatas), values, deadline, sig);
+        assertEq(account.nonce(), 1);
+    }
+
+    function test_nonce_namespace_matches_erc7201_and_preserves_other_storage() public {
+        bytes32 slot =
+            keccak256(abi.encode(uint256(keccak256("multicall-scripting.7702.nonce")) - 1)) & ~bytes32(uint256(0xff));
+        vm.store(eoa, bytes32(0), bytes32(uint256(999)));
+        assertEq(account.nonce(), 0);
+        uint256 deadline = block.timestamp + 100;
+        account.executeWithSignature(targets, offsets, pack(calldatas), values, deadline, _sign(EOA_KEY, 0, deadline));
+        assertEq(vm.load(eoa, slot), bytes32(uint256(1)));
+        assertEq(vm.load(eoa, bytes32(0)), bytes32(uint256(999)));
+    }
+
+    function testFuzz_malleated_signature_cannot_bypass_nonce(uint256 value) public {
+        calldatas[0] = abi.encodeCall(target.setValue, (value));
+        uint256 deadline = block.timestamp + 100;
+        bytes32 digest = account.hashExecute(targets, offsets, pack(calldatas), values, 0, deadline);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(EOA_KEY, digest);
+        bytes32 highS = bytes32(0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141 - uint256(s));
+        bytes memory twin = abi.encodePacked(r, highS, uint8(v == 27 ? 28 : 27));
+        account.executeWithSignature(targets, offsets, pack(calldatas), values, deadline, twin);
+        vm.expectRevert(SevenSevenZeroTwoCaller.InvalidSignature.selector);
+        account.executeWithSignature(targets, offsets, pack(calldatas), values, deadline, abi.encodePacked(r, s, v));
+        assertEq(account.nonce(), 1);
+        assertEq(target.value(), value);
+    }
+
+    function test_empty_signed_batch_cancels_pending_nonce() public {
+        uint256 deadline = block.timestamp + 100;
+        bytes memory pending = _sign(EOA_KEY, 0, deadline);
+        address[] memory emptyTargets = new address[](0);
+        uint256[] memory emptyWords = new uint256[](0);
+        bytes32 digest = account.hashExecute(emptyTargets, emptyWords, hex"", emptyWords, 0, deadline);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(EOA_KEY, digest);
+        account.executeWithSignature(emptyTargets, emptyWords, hex"", emptyWords, deadline, abi.encodePacked(r, s, v));
+        vm.expectRevert(SevenSevenZeroTwoCaller.InvalidSignature.selector);
+        account.executeWithSignature(targets, offsets, pack(calldatas), values, deadline, pending);
+        assertEq(target.value(), 0);
+        assertEq(account.nonce(), 1);
+    }
+
+    function test_deadline_is_inclusive_but_cannot_be_extended() public {
+        uint256 deadline = block.timestamp + 100;
+        bytes memory sig = _sign(EOA_KEY, 0, deadline);
+        vm.expectRevert(SevenSevenZeroTwoCaller.InvalidSignature.selector);
+        account.executeWithSignature(targets, offsets, pack(calldatas), values, deadline + 1, sig);
+        vm.warp(deadline);
+        account.executeWithSignature(targets, offsets, pack(calldatas), values, deadline, sig);
+        vm.warp(deadline + 1);
+        vm.expectRevert(SevenSevenZeroTwoCaller.SignatureExpired.selector);
+        account.executeWithSignature(targets, offsets, pack(calldatas), values, deadline, sig);
+    }
+
+    function test_rejected_relayer_refund_rolls_back_nonce_and_calls() public {
+        address rejectsEth = address(new MockTarget());
+        vm.deal(rejectsEth, 1 ether);
+        uint256 deadline = block.timestamp + 100;
+        bytes memory sig = _sign(EOA_KEY, 0, deadline);
+        vm.prank(rejectsEth);
+        vm.expectRevert(MulticallScripter.RefundFailed.selector);
+        account.executeWithSignature{value: 1 ether}(targets, offsets, pack(calldatas), values, deadline, sig);
+        assertEq(account.nonce(), 0);
+        assertEq(target.value(), 0);
+        assertEq(rejectsEth.balance, 1 ether);
+        assertEq(eoa.balance, 10 ether);
+    }
+
+    // executor validation still applies through the wrapper
+    function test_invalid_offset_through_wrapper() public {
         offsets[0] = 0;
-        calldatas[0] = abi.encodeWithSelector(MockTarget.setValue.selector, 42);
-        values[0] = 0;
-
-        vm.prank(unauthorizedUser);
-        vm.expectRevert("7702Caller: not entry point or authorized");
-        wallet.execute(targets, offsets, calldatas, values);
-    }
-
-    function testWithdrawETH() public {
-        uint256 initialBalance = 10 ether;
-        uint256 withdrawAmount = 5 ether;
-
-        vm.deal(address(wallet), initialBalance);
-
-        address recipient = address(0x999);
-        uint256 recipientInitialBalance = recipient.balance;
-
-        vm.prank(authorizedUser);
-        wallet.withdrawETH(payable(recipient), withdrawAmount);
-
-        assertEq(address(wallet).balance, initialBalance - withdrawAmount);
-        assertEq(recipient.balance, recipientInitialBalance + withdrawAmount);
-    }
-
-    function testWithdrawETHUnauthorized() public {
-        vm.deal(address(wallet), 10 ether);
-
-        vm.prank(unauthorizedUser);
-        vm.expectRevert("7702Caller: unauthorized");
-        wallet.withdrawETH(payable(address(0x999)), 5 ether);
-    }
-
-    function testWithdrawETHInsufficientBalance() public {
-        vm.deal(address(wallet), 1 ether);
-
-        vm.prank(authorizedUser);
-        vm.expectRevert("7702Caller: insufficient balance");
-        wallet.withdrawETH(payable(address(0x999)), 2 ether);
-    }
-
-    function testExecuteDelegateCall() public {
-        // Create a simple logic contract
-        SimpleLogic logic = new SimpleLogic();
-
-        vm.prank(authorizedUser);
-        wallet.executeDelegateCall(address(logic), abi.encodeWithSelector(SimpleLogic.setValue.selector, 999));
-
-        // Check that wallet storage was updated via delegatecall
-        // (This would require exposing the value variable in the wallet)
-    }
-
-    function testUpdateEntryPoint() public {
-        address newEntryPoint = address(0x777);
-
-        vm.prank(owner);
-        wallet.updateEntryPoint(newEntryPoint);
-
-        assertEq(wallet.entryPoint(), newEntryPoint);
-    }
-
-    function testUpdateEntryPointZeroAddress() public {
-        vm.prank(owner);
-        vm.expectRevert("7702Caller: zero address");
-        wallet.updateEntryPoint(address(0));
-    }
-
-    function testReceiveETH() public {
-        uint256 amount = 1 ether;
-
-        vm.deal(address(this), amount);
-        (bool success,) = address(wallet).call{value: amount}("");
-
-        assertTrue(success);
-        assertEq(address(wallet).balance, amount);
-    }
-
-    function testGetNextNonce() public {
-        assertEq(wallet.getNextNonce(authorizedUser), 0);
-
-        // After authorization verification, nonce should increment
-        // (Testing executeWithAuthorization would require signature generation)
-    }
-
-    function testGetDomainSeparator() public {
-        bytes32 domainSeparator = wallet.getDomainSeparator();
-        assertTrue(domainSeparator != bytes32(0));
-    }
-
-    function test_executeWithAuthorization_valid_sig() public {
-        uint256 nonce = wallet.getNextNonce(authorizedUser);
-        uint256 expiry = block.timestamp + 1000;
-
-        // Build EIP-712 typed data hash
-        bytes32 typehash = wallet.EIP7702_TYPEHASH();
-        bytes32 structHash = keccak256(abi.encode(typehash, authorizedUser, nonce, expiry));
-        bytes32 domainSeparator = wallet.getDomainSeparator();
-        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", domainSeparator, structHash));
-
-        // Sign with authorizedUser's key
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(AUTHORIZED_KEY, digest);
-        bytes memory signature = abi.encodePacked(r, s, v);
-
-        SevenSevenZeroTwoCaller.Authorization memory auth = SevenSevenZeroTwoCaller.Authorization({
-            authority: authorizedUser,
-            nonce: nonce,
-            expiry: expiry,
-            signature: signature
-        });
-
-        address[] memory targets = new address[](1);
-        uint256[] memory offsets = new uint256[](1);
-        bytes[] memory calldatas = new bytes[](1);
-        uint256[] memory values = new uint256[](1);
-
-        uint256 callOffset = 0xFE00000000000000000000000000000000000000000000000000000000000000;
-        targets[0] = address(mockTarget);
-        offsets[0] = callOffset;
-        calldatas[0] = abi.encodeWithSelector(MockTarget.setValue.selector, 42);
-        values[0] = 0;
-
-        wallet.executeWithAuthorization(targets, offsets, calldatas, values, auth);
-
-        assertEq(mockTarget.value(), 42);
-        assertEq(wallet.getNextNonce(authorizedUser), 1);
-    }
-
-    function test_executeWithAuthorization_expired() public {
-        uint256 nonce = wallet.getNextNonce(authorizedUser);
-        uint256 expiry = 0; // expired (block.timestamp >= 1 on any running chain)
-
-        bytes32 typehash = wallet.EIP7702_TYPEHASH();
-        bytes32 structHash = keccak256(abi.encode(typehash, authorizedUser, nonce, expiry));
-        bytes32 domainSeparator = wallet.getDomainSeparator();
-        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", domainSeparator, structHash));
-
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(AUTHORIZED_KEY, digest);
-        bytes memory signature = abi.encodePacked(r, s, v);
-
-        SevenSevenZeroTwoCaller.Authorization memory auth = SevenSevenZeroTwoCaller.Authorization({
-            authority: authorizedUser,
-            nonce: nonce,
-            expiry: expiry,
-            signature: signature
-        });
-
-        address[] memory targets = new address[](1);
-        uint256[] memory offsets = new uint256[](1);
-        bytes[] memory calldatas = new bytes[](1);
-        uint256[] memory values = new uint256[](1);
-        targets[0] = address(mockTarget);
-        offsets[0] = 0;
-        calldatas[0] = "";
-        values[0] = 0;
-
-        vm.expectRevert("7702Caller: invalid authorization");
-        wallet.executeWithAuthorization(targets, offsets, calldatas, values, auth);
-    }
-
-    function test_executeWithAuthorization_replay() public {
-        uint256 nonce = wallet.getNextNonce(authorizedUser);
-        uint256 expiry = block.timestamp + 1000;
-
-        bytes32 typehash = wallet.EIP7702_TYPEHASH();
-        bytes32 structHash = keccak256(abi.encode(typehash, authorizedUser, nonce, expiry));
-        bytes32 domainSeparator = wallet.getDomainSeparator();
-        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", domainSeparator, structHash));
-
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(AUTHORIZED_KEY, digest);
-        bytes memory signature = abi.encodePacked(r, s, v);
-
-        SevenSevenZeroTwoCaller.Authorization memory auth = SevenSevenZeroTwoCaller.Authorization({
-            authority: authorizedUser,
-            nonce: nonce,
-            expiry: expiry,
-            signature: signature
-        });
-
-        address[] memory targets = new address[](1);
-        uint256[] memory offsets = new uint256[](1);
-        bytes[] memory calldatas = new bytes[](1);
-        uint256[] memory values = new uint256[](1);
-        uint256 callOffset = 0xFE00000000000000000000000000000000000000000000000000000000000000;
-        targets[0] = address(mockTarget);
-        offsets[0] = callOffset;
-        calldatas[0] = abi.encodeWithSelector(MockTarget.setValue.selector, 42);
-        values[0] = 0;
-
-        // First use should succeed
-        wallet.executeWithAuthorization(targets, offsets, calldatas, values, auth);
-        assertEq(wallet.getNextNonce(authorizedUser), 1);
-
-        // Second use with same authorization should fail (nonce mismatch)
-        vm.expectRevert("7702Caller: invalid authorization");
-        wallet.executeWithAuthorization(targets, offsets, calldatas, values, auth);
-    }
-}
-
-contract SimpleLogic {
-    uint256 public value;
-
-    function setValue(uint256 _value) external {
-        value = _value;
+        vm.prank(eoa);
+        vm.expectRevert(abi.encodeWithSelector(MulticallScripter.InvalidOffset.selector, 0));
+        account.execute(targets, offsets, pack(calldatas), values);
     }
 }

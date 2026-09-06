@@ -1,303 +1,105 @@
-// SPDX-License-Identifier: GPL3
+// SPDX-License-Identifier: GPL-3.0
 pragma solidity ^0.8.28;
 
-import "./MulticallScripter.sol";
+import {MulticallScripter} from "./MulticallScripter.sol";
 
-/**
- * @title 7702Caller
- * @dev A general smart wallet contract built with EIP-7702 in mind
- * Inherits from MulticallScripter for efficient batch execution
- * Implements features for account abstraction and gas management
- */
+/// @title SevenSevenZeroTwoCaller
+/// @notice EIP-7702 delegate: an EOA that designates this code can run a MulticallScripter batch
+/// as itself — its own balance, allowances and msg.sender — with return-value chaining.
+///
+/// Two entry points, both authorised by the EOA's own key and nothing else:
+///  - `execute`: the EOA sends a transaction to itself (msg.sender == address(this)).
+///  - `executeWithSignature`: anyone (a relayer / sponsor) submits a batch the EOA signed as
+///    EIP-712 typed data, bound to this chain, this account, a nonce and a deadline.
+///
+/// The only storage is `nonce`, which lives in the delegating EOA's account. There is no owner
+/// list, entry point or admin function to misconfigure. Unlike the bare executor this contract
+/// accepts ETH, so a script can unwrap WETH into the account.
 contract SevenSevenZeroTwoCaller is MulticallScripter {
-    // EIP-7702 related constants and structures
-    bytes32 public constant EIP7702_TYPEHASH =
-        keccak256("EIP7702Authorization(address authority,uint256 nonce,uint256 expiry)");
+    /// @dev 0x82b42900
+    error Unauthorized();
+    /// @dev 0x0819bdcd
+    error SignatureExpired();
+    /// @dev 0x8baa579f
+    error InvalidSignature();
 
-    // Struct for EIP-7702 authorization
-    struct Authorization {
-        address authority;
-        uint256 nonce;
-        uint256 expiry;
-        bytes signature;
+    bytes32 private constant DOMAIN_TYPEHASH =
+        keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
+    bytes32 private constant NAME_HASH = keccak256("MulticallScripter7702");
+    bytes32 private constant VERSION_HASH = keccak256("3");
+    bytes32 public constant EXECUTE_TYPEHASH = keccak256("Execute(bytes32 batchHash,uint256 nonce,uint256 deadline)");
+
+    // ERC-7201: keccak256(abi.encode(uint256(keccak256(namespace)) - 1)) & ~bytes32(uint256(0xff)).
+    // Namespace: multicall-scripting.7702.nonce. Avoid collisions with other delegates' slot zero.
+    bytes32 private constant NONCE_SLOT = 0x4241ee3f5a008d1ff7829760ff02d0f163ee67d34e87e7c670a49035bb9f4400;
+
+    /// @notice Next nonce expected by `executeWithSignature`. Stored in the account's namespace.
+    function nonce() public view returns (uint256 n) {
+        assembly ("memory-safe") { n := sload(NONCE_SLOT) }
     }
 
-    // Track nonces for replay protection
-    mapping(address => uint256) public nonces;
+    receive() external payable override {}
 
-    // Authorized signers for this wallet
-    mapping(address => bool) public authorizedSigners;
-
-    // Entry point for ERC-4337 compatibility
-    address public entryPoint;
-
-    // Events
-    event SignerAdded(address indexed signer);
-    event SignerRemoved(address indexed signer);
-    event EntryPointUpdated(address indexed oldEntryPoint, address indexed newEntryPoint);
-    event Executed(
-        address indexed caller,
-        address[] targets,
-        uint256[] offsets,
-        bytes[] calldatas,
-        uint256[] values,
-        bytes authorizationData
-    );
-
-    /**
-     * @dev Constructor sets the entry point and authorizes the deployer as an initial signer.
-     * @param _entryPoint The ERC-4337 entry point address
-     */
-    constructor(address _entryPoint) {
-        entryPoint = _entryPoint;
-
-        // Owner is initially authorized
-        authorizedSigners[msg.sender] = true;
-        emit SignerAdded(msg.sender);
-    }
-
-    /**
-     * @dev EIP-712 domain separator computed dynamically so that it reflects address(this) at
-     * call time rather than at deploy time. This is critical for EIP-7702 use: when an EOA
-     * delegates to this implementation, address(this) is the EOA, not the implementation
-     * contract. A static constructor-computed separator would use the implementation address
-     * and fail to verify signatures produced for the EOA.
-     *
-     * Dynamic computation also handles post-fork chainId changes automatically.
-     */
-    function _domainSeparator() internal view returns (bytes32) {
-        return keccak256(
-            abi.encode(
-                keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
-                keccak256("7702Caller"),
-                keccak256("1"),
-                block.chainid,
-                address(this)
-            )
-        );
-    }
-
-    /**
-     * @dev Modifier to check if caller is authorized
-     */
-    modifier onlyAuthorized() {
-        require(authorizedSigners[msg.sender], "7702Caller: unauthorized");
-        _;
-    }
-
-    /**
-     * @dev Modifier to check if caller is entry point or authorized
-     */
-    modifier onlyEntryPointOrAuthorized() {
-        require(msg.sender == entryPoint || authorizedSigners[msg.sender], "7702Caller: not entry point or authorized");
-        _;
-    }
-
-    /**
-     * @dev Add an authorized signer
-     * @param signer Address to authorize
-     */
-    function addSigner(address signer) external onlyAuthorized {
-        require(signer != address(0), "7702Caller: zero address");
-        require(!authorizedSigners[signer], "7702Caller: already authorized");
-
-        authorizedSigners[signer] = true;
-        emit SignerAdded(signer);
-    }
-
-    /**
-     * @dev Remove an authorized signer
-     * @param signer Address to remove authorization from
-     */
-    function removeSigner(address signer) external onlyAuthorized {
-        require(authorizedSigners[signer], "7702Caller: not authorized");
-        require(signer != msg.sender, "7702Caller: cannot remove self");
-
-        authorizedSigners[signer] = false;
-        emit SignerRemoved(signer);
-    }
-
-    /**
-     * @dev Update the entry point address
-     * @param newEntryPoint New entry point address
-     */
-    function updateEntryPoint(address newEntryPoint) external onlyAuthorized {
-        require(newEntryPoint != address(0), "7702Caller: zero address");
-
-        address oldEntryPoint = entryPoint;
-        entryPoint = newEntryPoint;
-        emit EntryPointUpdated(oldEntryPoint, newEntryPoint);
-    }
-
-    /**
-     * @dev Verify EIP-7702 authorization signature
-     * @param authorization Authorization data
-     * @return isValid Whether the authorization is valid
-     */
-    function verifyAuthorization(Authorization calldata authorization) public view returns (bool) {
-        // Check expiry
-        if (authorization.expiry < block.timestamp) {
-            return false;
-        }
-
-        // Check nonce
-        if (authorization.nonce != nonces[authorization.authority]) {
-            return false;
-        }
-
-        // Recover signer
-        bytes32 digest = keccak256(
-            abi.encodePacked(
-                "\x19\x01",
-                _domainSeparator(),
-                keccak256(
-                    abi.encode(EIP7702_TYPEHASH, authorization.authority, authorization.nonce, authorization.expiry)
-                )
-            )
-        );
-
-        address recovered = recover(digest, authorization.signature);
-        return recovered == authorization.authority;
-    }
-
-    /**
-     * @dev Execute a batch of calls with EIP-7702 authorization
-     * @param targets Array of target addresses
-     * @param offsets Array of encoded call parameters
-     * @param calldatas Array of calldata for each call
-     * @param values Array of msg.values for each call
-     * @param authorization EIP-7702 authorization data
-     */
-    function executeWithAuthorization(
-        address[] calldata targets,
-        uint256[] calldata offsets,
-        bytes[] calldata calldatas,
-        uint256[] calldata values,
-        Authorization calldata authorization
-    ) external payable {
-        // Verify authorization
-        require(verifyAuthorization(authorization), "7702Caller: invalid authorization");
-
-        // Increment nonce to prevent replay
-        nonces[authorization.authority]++;
-
-        emit Executed(authorization.authority, targets, offsets, calldatas, values, abi.encode(authorization));
-
-        // Execute the batch (bypass the onlyEntryPointOrAuthorized modifier since authorization is already verified)
-        MulticallScripter.execute(targets, offsets, calldatas, values);
-    }
-
-    /**
-     * @dev Execute a batch of calls (override from MulticallScripter)
-     * Only allowed for authorized callers or entry point
-     */
+    /// @notice Run a batch as this account. Only the account itself may call (EOA self-call).
     function execute(
         address[] calldata targets,
         uint256[] calldata offsets,
-        bytes[] calldata calldatas,
+        bytes calldata calldatas,
         uint256[] calldata values
-    ) public payable override onlyEntryPointOrAuthorized {
-        // Emit event before execution for better gas tracking
-        emit Executed(msg.sender, targets, offsets, calldatas, values, "");
-
+    ) public payable override {
+        if (msg.sender != address(this)) revert Unauthorized();
         super.execute(targets, offsets, calldatas, values);
     }
 
-    // SevenSevenZeroTwoCaller is a smart wallet and intentionally accepts ETH.
-    receive() external payable override {}
-
-    /**
-     * @dev Withdraw ETH from the wallet
-     * @param to Address to send ETH to
-     * @param amount Amount of ETH to withdraw
-     */
-    function withdrawETH(address payable to, uint256 amount) external onlyAuthorized {
-        require(address(this).balance >= amount, "7702Caller: insufficient balance");
-        // low-level call (not transfer) so contract recipients with non-trivial receive() succeed
-        (bool ok,) = to.call{value: amount}("");
-        require(ok, "7702Caller: withdraw failed");
+    /// @notice Run a batch that this account signed. Callable by anyone before `deadline`.
+    /// @dev The signature covers the decoded targets, offsets, packed calldata and values.
+    /// Re-encoding those same inputs is harmless; changing any input invalidates the signature.
+    /// Each signature is usable exactly once. Domain version 3 separates the namespaced nonce
+    /// from earlier releases' slot-zero nonce. Removing delegation does not cancel signatures.
+    function executeWithSignature(
+        address[] calldata targets,
+        uint256[] calldata offsets,
+        bytes calldata calldatas,
+        uint256[] calldata values,
+        uint256 deadline,
+        bytes calldata signature
+    ) external payable {
+        if (block.timestamp > deadline) revert SignatureExpired();
+        uint256 currentNonce = nonce();
+        uint256 nextNonce = currentNonce + 1;
+        assembly ("memory-safe") { sstore(NONCE_SLOT, nextNonce) }
+        bytes32 digest = hashExecute(targets, offsets, calldatas, values, currentNonce, deadline);
+        if (_recover(digest, signature) != address(this)) revert InvalidSignature();
+        super.execute(targets, offsets, calldatas, values);
     }
 
-    /**
-     * @dev Execute a single call (convenience function)
-     * @param target Target address
-     * @param value ETH value to send
-     * @param data Calldata
-     */
-    function executeCall(address target, uint256 value, bytes calldata data)
-        external
-        onlyAuthorized
-        returns (bytes memory)
-    {
-        (bool success, bytes memory result) = target.call{value: value}(data);
-        require(success, "7702Caller: call failed");
-        return result;
+    /// @notice EIP-712 digest a signer must sign for `executeWithSignature`.
+    function hashExecute(
+        address[] calldata targets,
+        uint256[] calldata offsets,
+        bytes calldata calldatas,
+        uint256[] calldata values,
+        uint256 nonce_,
+        uint256 deadline
+    ) public view returns (bytes32) {
+        bytes32 batchHash = keccak256(abi.encode(targets, offsets, calldatas, values));
+        bytes32 structHash = keccak256(abi.encode(EXECUTE_TYPEHASH, batchHash, nonce_, deadline));
+        return keccak256(abi.encodePacked("\x19\x01", domainSeparator(), structHash));
     }
 
-    /**
-     * @dev Execute a delegate call (for upgrading/logic contracts)
-     * @param target Target address
-     * @param data Calldata
-     */
-    function executeDelegateCall(address target, bytes calldata data) external onlyAuthorized returns (bytes memory) {
-        (bool success, bytes memory result) = target.delegatecall(data);
-        require(success, "7702Caller: delegatecall failed");
-        return result;
+    /// @dev Computed per call: under EIP-7702 `address(this)` is the delegating EOA, not the
+    /// implementation, so it cannot be cached at construction. Also tracks chain-id changes.
+    function domainSeparator() public view returns (bytes32) {
+        return keccak256(abi.encode(DOMAIN_TYPEHASH, NAME_HASH, VERSION_HASH, block.chainid, address(this)));
     }
 
-    /**
-     * @dev Recover signer from signature
-     * @param hash Message hash
-     * @param signature Signature
-     * @return recovered Recovered address
-     */
-    function recover(bytes32 hash, bytes memory signature) internal pure returns (address) {
-        require(signature.length == 65, "7702Caller: invalid signature length");
-
-        bytes32 r;
-        bytes32 s;
-        uint8 v;
-
-        assembly {
-            r := mload(add(signature, 32))
-            s := mload(add(signature, 64))
-            v := byte(0, mload(add(signature, 96)))
-        }
-
-        if (v < 27) {
-            v += 27;
-        }
-
-        require(v == 27 || v == 28, "7702Caller: invalid signature v value");
-
-        address recovered = ecrecover(hash, v, r, s);
-        require(recovered != address(0), "7702Caller: invalid signature");
-        return recovered;
-    }
-
-    /**
-     * @dev Get the next nonce for an authority
-     * @param authority The authority address
-     * @return The next nonce
-     */
-    function getNextNonce(address authority) external view returns (uint256) {
-        return nonces[authority];
-    }
-
-    /**
-     * @dev Check if an address is authorized
-     * @param signer Address to check
-     * @return Whether the address is authorized
-     */
-    function isAuthorized(address signer) external view returns (bool) {
-        return authorizedSigners[signer];
-    }
-
-    /**
-     * @dev Get the current EIP-712 domain separator for this address.
-     * Returns different values depending on the calling context (EOA vs implementation).
-     */
-    function getDomainSeparator() external view returns (bytes32) {
-        return _domainSeparator();
+    function _recover(bytes32 digest, bytes calldata signature) private pure returns (address signer) {
+        if (signature.length != 65) revert InvalidSignature();
+        bytes32 r = bytes32(signature[0:32]);
+        bytes32 s = bytes32(signature[32:64]);
+        uint8 v = uint8(signature[64]);
+        if (v < 27) v += 27;
+        signer = ecrecover(digest, v, r, s);
+        if (signer == address(0)) revert InvalidSignature();
     }
 }

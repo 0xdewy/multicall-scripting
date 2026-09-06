@@ -6,8 +6,8 @@ import "weiroll-huff/weiroll/Planner.sol";
 import "weiroll-huff/weiroll/Weiroll.sol";
 import "weiroll-huff/weiroll/CommandBuilder.sol";
 import {Events, Math} from "./Helpers.sol";
-import "../src/MulticallScripter.sol";
-import "../src/CallBuilder.sol";
+import {MulticallScripter} from "../src/MulticallScripter.sol";
+import {CallBuilder} from "./CallBuilder.sol";
 
 interface IWeiroll {
     function execute(bytes32[] calldata _commands, bytes[] memory _state) external payable;
@@ -45,6 +45,10 @@ contract GasTest is Test, Events, CallBuilder {
         uint256 directGas;
         uint256 g;
 
+        // Warm the same targets before all measurements so access costs are comparable.
+        assertGt(address(math).code.length, 0);
+        assertGt(address(events).code.length, 0);
+
         // encode weiroll calls
         for (uint256 i = 0; i < 30; i++) {
             planner.staticCall(address(math), math.add.selector);
@@ -55,9 +59,8 @@ contract GasTest is Test, Events, CallBuilder {
             planner.withArg(stateIndex);
         }
         (bytes32[] memory _commands, bytes[] memory _state) = planner.encode();
-        g = gasleft();
         weiroll.execute(_commands, _state);
-        weirollGas = g - gasleft();
+        weirollGas = vm.lastCallGas().gasTotalUsed;
 
         // encode calls for scripter contract
         for (uint256 i = 0; i < 30; i++) {
@@ -69,9 +72,8 @@ contract GasTest is Test, Events, CallBuilder {
             targets.push(address(events));
             offsets.push(stateChangingCall(0x0));
         }
-        g = gasleft();
-        multicall.execute(targets, offsets, calldatas, values);
-        scripterGas = g - gasleft();
+        multicall.execute(targets, offsets, pack(calldatas), values);
+        scripterGas = vm.lastCallGas().gasTotalUsed;
 
         // make calls directly for baseline
         g = gasleft();
@@ -90,21 +92,4 @@ contract GasTest is Test, Events, CallBuilder {
         // Weiroll must beat naive iteration (sanity check)
         assertLt(weirollGas, directGas * 30, "Weiroll too slow vs direct");
     }
-
-    /*
-    function testAddUints() public {
-        uint8 a = 0x69;
-        uint16 b = 0x420;
-        planner.staticCall(address(math), math.add.selector);
-        planner.withRawArg(abi.encode(a), false);
-        planner.withRawArg(abi.encode(b), false);
-        bytes1 index = planner.saveOutput();
-        planner.regularCall(address(events), events.logUint.selector);
-        planner.withArg(index);
-
-        (bytes32[] memory _commands, bytes[] memory _state) = planner.encode();
-
-        weiroll.execute(_commands, _state);
-    }
-    */
 }

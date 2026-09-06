@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0
+pragma solidity ^0.8.28;
+
 interface IMulticall3 {
     struct Call3Value {
         address target;
@@ -24,7 +27,7 @@ interface IUniswapV2Pair {
 contract UniV2 {
     address public constant FACTORY = 0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f;
 
-    function getPair(address token0, address token1) public returns (address) {
+    function getPair(address token0, address token1) public pure returns (address) {
         return address(
             uint160(
                 uint256(
@@ -43,21 +46,6 @@ contract UniV2 {
         );
     }
 
-    // Get amount out given reserves directly
-    function getAmountOut(uint256 amountIn, uint256 reserveIn, uint256 reserveOut)
-        public
-        pure
-        returns (uint256 amountOut)
-    {
-        require(amountIn > 0, "Amount in must be > 0");
-        require(reserveIn > 0 && reserveOut > 0, "Insufficient liquidity");
-
-        uint256 amountInWithFee = amountIn * 997; // 0.3% fee
-        uint256 numerator = amountInWithFee * reserveOut;
-        uint256 denominator = (reserveIn * 1000) + amountInWithFee;
-        amountOut = numerator / denominator;
-    }
-
     function getAmountOut(address v2Pair, uint256 amountIn, address tokenIn, address tokenOut)
         public
         view
@@ -70,23 +58,6 @@ contract UniV2 {
         uint256 amountInWithFee = amountIn * 997;
         uint256 numerator = amountInWithFee * reserveOut;
         uint256 denominator = reserveIn * 1000 + amountInWithFee;
-        amountOut = numerator / denominator;
-    }
-
-    // Get amount out by fetching reserves from pair
-    function getAmountOut(address pair, address tokenIn, uint256 amountIn) public view returns (uint256 amountOut) {
-        require(amountIn > 0, "Amount in must be > 0");
-
-        // Fetch reserves and token order
-        (uint112 reserve0, uint112 reserve1,) = IUniswapV2Pair(pair).getReserves();
-        address token0 = IUniswapV2Pair(pair).token0();
-        (uint256 reserveIn, uint256 reserveOut) = tokenIn == token0 ? (reserve0, reserve1) : (reserve1, reserve0);
-        require(reserveIn > 0 && reserveOut > 0, "Insufficient liquidity");
-
-        // Calculate amount out
-        uint256 amountInWithFee = amountIn * 997; // 0.3% fee
-        uint256 numerator = amountInWithFee * reserveOut;
-        uint256 denominator = (reserveIn * 1000) + amountInWithFee;
         amountOut = numerator / denominator;
     }
 }

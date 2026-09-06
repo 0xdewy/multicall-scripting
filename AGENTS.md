@@ -1,306 +1,127 @@
-# AGENTS.md - Multicall Scripting Guide for LLMs
+# AGENTS.md — working on multicall-scripting
 
-This document provides essential information for LLMs (Large Language Models) working with the Multicall Scripting codebase. It covers architecture, key files, development workflows, and common patterns.
+Read this before changing anything. It is the one place that explains how the three layers fit
+together and what must stay true. README.md is the user-facing guide; SECURITY.md the trust model.
 
-## 🏗️ Project Overview
+## What this is
 
-**Multicall Scripting** enables atomic execution of multi-contract strategies with return value chaining between calls. Unlike basic multicall solutions, it allows using return values from one call as inputs to another within the same transaction.
+An on-chain executor (`MulticallScripter.execute`) runs a list of calls and splices return data
+from earlier calls into the calldata of later ones, driven by one 256-bit "offset word" per call.
+Two off-chain builders (JavaScript, Rust) produce targets, packed calldata, values and offset words from ABIs. An
+optional EIP-7702 delegate wraps the executor for EOAs.
 
-### Core Components
-- **Solidity Layer**: Smart contracts for on-chain execution
-- **JavaScript Layer**: Offchain transaction builder and utilities
-- **Descriptor System**: Proxy objects representing future return values
-
-## 📁 Key Files & Their Purposes
-
-### Solidity Contracts (`src/`)
-| File | Purpose | Key Functions |
-|------|---------|---------------|
-| `MulticallScripter.sol` | Core execution contract | `execute()` - runs chained calls |
-| `CallBuilder.sol` | Solidity DSL for tests | `call_static()`, `useCallOutput()` |
-| `7702Caller.sol` | EIP-7702 compatibility | Account abstraction support |
-
-### JavaScript Library (`js/`)
-| File | Purpose | Key Components |
-|------|---------|---------------|
-| `index.js` | Main TransactionBuilder class | `addCall()`, `build()`, offset encoding |
-| `cli.js` | Command-line interface | Transaction building utility |
-| `test/` | JavaScript test suite | Individual feature tests |
-
-### Test Suite (`test/`)
-| File | Purpose | Coverage |
-|------|---------|----------|
-| `MulticallScripter.t.sol` | Core contract tests | Execution logic, edge cases |
-| `CallBuilder.t.sol` | DSL functionality tests | Chaining patterns, error cases |
-| `JsLibrary.t.sol` | JavaScript integration tests | Cross-layer compatibility |
-
-## 🧠 Architecture Guide for LLMs
-
-### Memory Offset System
-The system uses compact 256-bit offset encoding to specify how return data should be handled:
-
-#### Regular Calls (StaticCall and StateChangingCall)
 ```
-Bits: [8:calltype][120:memTarget/returnOffset][120:resultLength/returnSize]
-- calltype: 0xFF (static), 0xFE (regular)
-- memTarget: Memory offset for return data storage
-- resultLength: Size of return data to copy
+src/MulticallScripter.sol   executor (Yul). Constants contract mirrors the schema by hand.
+src/MulticallScripterReadOnly.sol  view twin: staticcall everything, return bytes[] of all return data
+src/7702Caller.sol          EIP-7702 delegate: self-call or EIP-712 signed batch.
+schema/offset-schema.json   canonical bit layout. Edit this first.
+js/encoding.js              offset encode/decode (reads js/offset-schema.json, a synced mirror)
+js/index.js                 TransactionBuilder + ABI layout engine + descriptors
+js/cli.js                   JSON in → {targets, offsets, calldatas, msgValues} out (used by FFI tests)
+js/test/*.test.js           bun unit tests;  js/test/*.js (no .test) are FFI scripts run by forge
+js/test-vectors.json        golden offset vectors (JS-generated, asserted by JS and Rust)
+js/build-vectors.json       golden whole-build vectors (JS-generated, asserted by JS and Rust)
+rust/crates/codec           encode/decode; constants generated from the schema by build.rs
+rust/crates/builder         TransactionBuilder port (scalar + single dynamic value paths)
+rust/crates/cli             tx-builder-rs, same JSON contract as js/cli.js
+test/MulticallScripter.t.sol executor unit + fuzz tests (every error path has a test)
+test/MulticallScripterReadOnly.t.sol  read-only twin (same error paths, result encoding)
+test/7702Caller.t.sol        delegate tests (EOA simulated with vm.etch)
+test/7702Invariant.t.sol     stateful nonce, rollback and ETH-accounting model
+test/ExecutorInvariant.t.sol committed arithmetic, refunds, ETH conservation and read-only observations
+test/Adversarial.t.sol       malicious callees, replay callbacks, static restrictions, malformed frames
+script/rehearse.sh           deterministic deployment + real protocol and 7702 mainnet-fork rehearsal
+test/CallBuilder.sol         test-only Solidity offset encoders + a small Scripter DSL
+test/JsLibrary.t.sol         JS builder → on-chain (vm.ffi bun ...)
+test/RustLibrary.t.sol       Rust CLI → on-chain (vm.ffi cargo run ...)
+test/Gas*.t.sol              gas benchmarks and a Weiroll comparison (lib/weiroll-huff)
+.claude/skills/multicall-scripting  installable skill for people using the library
 ```
 
-#### Partial Return Calls (STATIC_CALL_PARTIAL_RETURN_FLAG = 0xFC)
-```
-Bits: [8:calltype][8:valueIndex][120:memTargets(40×3)][48:resultLengths(16×3)][48:returnOffsets(16×3)][16:returnDataSize][8:num_vars]
-- calltype: 0xFC (partial return)
-- memTargets: Array of 3 memory targets (40 bits each)
-- resultLengths: Array of 3 variable lengths (16 bits each)
-- returnOffsets: Array of 3 return data offsets (16 bits each)
-```
+## Commands
 
-### Descriptor System (JavaScript)
-- **Proxy objects** represent future return values
-- **Dynamic types** require `.with_length()` specification
-- **Struct access** uses dot notation: `result.fieldName`
-- **Array elements** use bracket notation: `result[0]`
-
-### Key Constants
-```javascript
-// JavaScript (js/index.js)
-STATIC_CALL_FLAG = 0xFF
-CALL_FLAG = 0xFE
-STATIC_CALL_PARTIAL_RETURN_FLAG = 0xFC
-VALUE_OFFSET = 248
-
-// Solidity (src/MulticallScripter.sol)
-uint256 constant STATIC_CALL_FLAG = 0xFF;
-uint256 constant CALL_FLAG = 0xFE;
-uint256 constant STATIC_CALL_PARTIAL_RETURN_FLAG = 0xFC;
-uint256 constant VALUE_OFFSET = 248;
-```
-
-## 🛠️ Development Workflows
-
-### Setup Commands
 ```bash
-# Install JavaScript dependencies
-cd js && bun install
-
-# Install Foundry dependencies
-forge install
-
-# Update Foundry
-foundryup
+forge build && forge test                 # needs bun + cargo on PATH for the FFI suites
+ETH_RPC_URL=... FORK_BLOCK=... forge test --mc CallBuilder   # the two mainnet-fork tests (skipped otherwise)
+uv run script/check-memory-bounds.py     # scoped solver checks (not full formal verification)
+script/rehearse.sh                       # local deployment, real protocol/7702 transactions, fork tests
+forge snapshot --fuzz-seed 0x51c7 --no-match-contract 'JsLibrary|RustLibrary|Invariant' --no-match-test 'test_mint_weth_and_swap'   # refresh .gas-snapshot (CI checks it, 5% tolerance)
+cd js && bun install && bun test
+cd rust && cargo test && cargo clippy --all-targets
+bun js/scripts/gen-test-vectors.js && bun js/scripts/gen-build-vectors.js   # after changing encoders/builder
+cd js && bun run sync:schema              # after editing schema/offset-schema.json
 ```
 
-### Testing Commands
-```bash
-# Run all Solidity tests (verbose)
-forge test -vv
+## Invariants — do not break these
 
-# Run specific test file
-forge test --match-test test_partial_return_data
+1. **One bit layout.** `schema/offset-schema.json` is canonical. Solidity mirrors it by hand
+   (`Constants` + the masks/shifts in `execute`), JS reads the synced mirror, Rust generates
+   constants at build time. Changing a field means: schema → `bun run sync:schema` → Solidity →
+   regenerate both vector files → all three suites green.
+2. **memTargets are relative to the call after the producer.** `execute` resolves
+   `memTarget` against the start of the calldata of call `i+1` when call `i` produced the data.
+   Builders must add the region size (`32 + pad32(len)`) of every call between producer and
+   consumer. The JS builder does this in `addCall`; Rust in `add_call`.
+3. **Positions come from real encodings, never guesses.** The JS builder locates argument
+   positions by reading head pointers out of the viem-encoded calldata (`locate`), and lays out
+   return data from the ABI outputs (`layoutTuple`). Anything whose position is only known at run
+   time (a second dynamic value, arrays of dynamic elements) is marked `unsupported` and throws on
+   use. Keep it that way; a wrong position means the executor splices into the wrong argument.
+4. **The executor validates what it can.** Every write must stay inside the calldata region
+   (`InvalidMemoryTarget`), every byte spliced must come from real return data
+   (`InsufficientReturnData`), `valueIndex` must be in range, unspent `msg.value` is refunded.
+   Execution depends only on the decoded inputs, not on how they were encoded (the packed `bytes` buffer is located through its ABI head). The 7702 signature covers `abi.encode` of all four inputs.
+   The third argument is packed `bytes`: `[length][data padded to 32]` frames, with no inner
+   head table. All bytes are signed; frame bounds and the final frame count are validated.
+5. **Stateless executor.** No storage, no held balances, `receive()` reverts. The 7702 delegate
+   has exactly one namespaced storage slot (`nonce`, ERC-7201 `multicall-scripting.7702.nonce`) and no admin surface.
+6. **Error selectors are hardcoded in Yul.** If you add or rename an error, recompute the selector
+   (`cast sig 'Name()'`), update the Yul literal and the `@dev` comment, and add an
+   `expectRevert` test — the test is what proves the literal is right.
+7. **Golden vectors pin Rust to JS.** If a JS change alters `build()` output for an existing
+   scenario, that is either a bug fix (regenerate vectors, and expect Rust to need the same fix) or
+   a regression. Never regenerate vectors to make a failing test pass without understanding why.
 
-# Run JavaScript tests
-cd js && bun test
+## How a change flows
 
-# Run specific JavaScript test
-cd js && bun test/test/simpleValue.js
-```
+- **New executor behaviour** → `src/MulticallScripter.sol` *and* `src/MulticallScripterReadOnly.sol`
+  (they share the decode/splice rules — keep them in step; the writer copies partial slices directly from returndata) → test in `test/MulticallScripter.t.sol`
+  (and `test/CallBuilder.sol` if the encoders change) → `forge snapshot` → both builders if the
+  encoding changed.
+- **New builder capability** → `js/index.js` → unit test in `js/test/layouts.test.js` with
+  hand-computed positions → on-chain proof in `js/test/layouts.js` + `test/JsLibrary.t.sol`
+  (add a function to `Layouts` in `test/Helpers.sol`) → port to Rust if it is on the supported
+  path, or extend the "Not ported" list in `rust/crates/builder/src/lib.rs`.
+- **Docs** → README.md for users, this file for contributors, SECURITY.md for trust/limits, the
+  skill for library consumers. Keep them factual; delete rather than let them drift.
 
-### Build & Example Execution
-```bash
-# Build transaction via CLI
-cd js && node cli.js <target> <abi_path>
+## Conventions
 
-# Run example strategy
-cd js/examples && bun run multiple_swaps.js
-```
+- Solidity: `// SPDX-License-Identifier: GPL-3.0`, `pragma solidity ^0.8.28`, named imports,
+  custom errors (no revert strings in `src/`), `assembly ("memory-safe")`. Build is via-IR with
+  the optimizer on; the executors are written as small Yul functions (`step`, `partial`/`splice`,
+  `doCall`) — that, plus via-IR, is what keeps them clear of stack-too-deep. Do not fold them back
+  into one block.
+- JS: ES modules, `BigInt` for every 256-bit quantity, viem is the only runtime dependency,
+  private helpers stay module-local. Tests are bun (`*.test.js`); FFI scripts print one JSON line.
+- Rust: alloy only (no ethers-rs), `thiserror` errors whose messages mirror the JS strings,
+  offsets are `U256`, constants never hand-written.
+- Tests: every executor error has a test; every builder position rule has a hand-computed unit
+  test and an on-chain FFI test; write benchmarks cap executor-only gas at the pre-review baseline (no regression headroom).
 
-## 📝 Common Tasks for LLMs
+## Things that look like bugs but are not
 
-### Adding New Features
-1. **Modify both layers**: Solidity contract + JavaScript builder
-2. **Update offset encoding**: Ensure bit alignment matches between layers
-3. **Add tests**: Include both Foundry and JavaScript test cases
-4. **Update documentation**: README.md and code comments
+- `values` may be shorter than `targets`; only calls with `valueIndex > 0` read it.
+- A static call with `staticCall(0, 0)` and no consumer is legal (side-effect-free read that
+  nobody uses); the builder emits it for unconsumed view calls.
+- The last call can never chain (there is no next call); the executor reverts with
+  `InvalidMemoryTarget` rather than writing past the region.
+- `with_length(0)` is allowed (empty array / bytes → 32-byte length word only).
+- The CLIs reject unsafe JSON numbers. Quote large integers; JS API callers use BigInt or
+  strings. Reference objects contain safe integer positions. Ambiguous overloaded names are rejected.
 
-### Fixing Bugs
-1. **Check offset consistency**: Verify JavaScript encoding matches Solidity decoding
-2. **Test edge cases**: Use existing test patterns as reference
-3. **Run full test suite**: Both `forge test` and `bun test`
-4. **Verify bit operations**: Pay attention to shift/mask operations
+## Things that are genuinely out of scope
 
-### Writing Tests
-**Solidity Tests (Foundry):**
-```solidity
-// Follow pattern from test/MulticallScripter.t.sol
-function test_NewFeature() public {
-    // Setup
-    bytes memory calldata = abi.encodeWithSelector(...);
-    
-    // Execution
-    uint256 callIndex = call_static(target, calldata);
-    
-    // Assertions
-    assertEq(result, expected);
-}
-```
-
-**JavaScript Tests:**
-```javascript
-// Follow pattern from js/test/simpleValue.js
-const builder = new TransactionBuilder();
-const result = builder.addCall(abi, target, "function", args);
-const built = builder.build();
-
-// Verify offset encoding
-assert(built.offsets[0].toString().includes(expected));
-```
-
-## ⚠️ Important Constraints
-
-### Technical Limits
-1. **Maximum 3 variables per call** due to 256-bit encoding space
-2. **Dynamic arrays require `.with_length()`** before use
-3. **No return data reuse** - each value can only be used once
-4. **Memory offset limits**: 
-   - `memTargets`: 40-bit offsets
-   - `resultLengths`/`returnOffsets`: 16-bit values
-   - `returnDataSize`: max 65535 bytes
-
-### Consistency Requirements
-1. **Bit alignment must match** across Solidity, JavaScript, and Rust (`rust/`)
-2. **Constants must be identical** in all three layers — `schema/offset-schema.json` is the single
-   source of truth (JS reads it, Rust codegen's from it via `rust/crates/codec/build.rs`, Solidity
-   mirrors it by hand). Edit the schema first, then regenerate golden vectors
-   (`bun js/scripts/gen-test-vectors.js`).
-3. **Test coverage should be parallel** across layers (incl. `cargo test` and the `RustLibrary`
-   FFI test)
-4. **Error handling should be consistent** across interfaces
-5. **See `docs/rust.md`** for the Rust layer's crate map, parity model, and current scope/limits
-
-## 🔍 Troubleshooting Guide
-
-### Common Issues & Solutions
-
-#### Offset Encoding Errors
-```
-Problem: "Invalid offset encoding" or memory corruption
-Check:
-1. Bit shift operations in JavaScript match Solidity
-2. Constants (VALUE_OFFSET, etc.) are identical
-3. Field sizes (8, 120, 48, 16 bits) align correctly
-```
-
-#### Test Failures
-```
-Problem: Tests pass in one layer but fail in another
-Action:
-1. Run both test suites: `forge test` AND `bun test`
-2. Check cross-layer integration tests (JsLibrary.t.sol)
-3. Verify example scripts still work
-```
-
-#### Build Errors
-```
-Problem: Dependency or compilation issues
-Fix:
-1. Update dependencies: `bun install` and `forge install`
-2. Clear cache: `forge clean`
-3. Check Solidity version: Must be ^0.8.28
-```
-
-### Debugging Tips
-- **Use `-vv` flag**: `forge test -vv` for verbose output
-- **Check assembly**: Pay attention to inline assembly in Solidity
-- **Verify bit masks**: Ensure AND operations use correct masks
-- **Test incrementally**: Add small changes and test frequently
-
-## 📚 Code Conventions
-
-### Solidity Style
-- **License**: GPL3
-- **Version**: `^0.8.28`
-- **Assembly**: Used for gas efficiency with detailed comments
-- **Constants**: UPPER_SNAKE_CASE in separate contract
-- **Errors**: Custom error types with descriptive names
-
-### JavaScript Style
-- **Imports**: Use `viem` for ABI encoding
-- **BigInt**: Use for 256-bit values (not Number)
-- **Classes**: TransactionBuilder as main interface
-- **Utilities**: TypeUtils for dynamic type detection
-- **Exports**: Named exports for constants and functions
-
-### Naming Patterns
-- **Offsets**: Descriptive names like `memTarget`, `returnOffset`
-- **Functions**: `call_static()`, `useCallOutput()`, `addCall()`
-- **Variables**: `callIndex`, `resultLength`, `num_vars`
-- **Tests**: `test_` prefix with descriptive names
-
-## 🔗 Integration Points
-
-### EIP-7702 Compatibility
-- See `7702Caller.sol` for account abstraction support
-- Follows EIP-7702 standard for external ownership
-- Integrates with MulticallScripter execution model
-
-### Related Projects
-- **Multicall3**: Basic batching (this project adds chaining)
-- **Weiroll**: Different approach to VM scripting
-- **Comparison**: Documented in README.md "Related Projects"
-
-### External Dependencies
-- **Foundry**: Development and testing framework
-- **Viem**: Ethereum TypeScript/JavaScript library
-- **Bun**: JavaScript runtime for tests and examples
-
-## 🎯 Quick Reference Tables
-
-### Offset Bit Layouts
-| Call Type | Total Bits | Field Breakdown |
-|-----------|------------|-----------------|
-| Regular | 256 | 8 + 120 + 120 |
-| Partial Return | 256 | 8 + 8 + 120 + 48 + 48 + 16 + 8 |
-
-### Type Utilities (JavaScript)
-| Function | Purpose | Example |
-|----------|---------|---------|
-| `isDynamicType()` | Check if type is dynamic | `isDynamicType("string") → true` |
-| `getElementType()` | Get array element type | `getElementType("address[]") → "address"` |
-| `isArrayType()` | Check if type is array | `isArrayType("uint256[]") → true` |
-
-### Test Helpers (`js/test/common.js`)
-| Function | Purpose |
-|----------|---------|
-| `loadABI()` | Load ABI from file path |
-| Test utilities | Common setup for JavaScript tests |
-
-## 🤖 LLM-Specific Guidance
-
-### When Modifying Code
-1. **Always update both layers**: Solidity changes need JavaScript updates
-2. **Check offset encoding**: Use test files as reference for bit operations
-3. **Run full test suite**: Don't rely on partial test results
-4. **Verify examples**: Ensure example scripts still work
-
-### When Adding Features
-1. **Start with tests**: Write tests first to define expected behavior
-2. **Follow existing patterns**: Use similar code structure to existing features
-3. **Document changes**: Update README.md and code comments
-4. **Consider constraints**: Remember 3-variable limit and bit encoding limits
-
-### When Debugging
-1. **Use verbose output**: `-vv` flag in Foundry tests
-2. **Check both test suites**: Solidity and JavaScript tests may fail differently
-3. **Examine bit operations**: Most bugs are in shift/mask calculations
-4. **Compare with working code**: Use existing features as reference implementation
-
-### Best Practices
-1. **Keep constants synchronized**: Update both Solidity and JavaScript
-2. **Maintain test parity**: Features should have tests in both layers
-3. **Document edge cases**: Especially for bit manipulation code
-4. **Use descriptive names**: Especially for offset-related variables
-
----
-
-*This AGENTS.md file is maintained to help LLMs understand and contribute to the Multicall Scripting project effectively. Update it when adding significant new features or changing architecture patterns.*
+- `delegatecall` from the executor (removed; it would break statelessness).
+- ERC-4337 / entry-point integration in the 7702 delegate.
+- Chaining values whose position depends on runtime data (second dynamic value, dynamic elements).

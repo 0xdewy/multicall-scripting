@@ -23,7 +23,6 @@ import {
     CALL_FLAG,
     STATIC_CALL_PARTIAL_RETURN_FLAG,
     CALL_PARTIAL_RETURN_FLAG,
-    DELEGATE_CALL_FLAG,
     VALUE_OFFSET,
 } from "../encoding.js";
 
@@ -235,11 +234,6 @@ describe("validateOffset", () => {
         expect(() => validateOffset(stateChangingCall(0))).not.toThrow();
     });
 
-    test("delegate call flag (unimplemented) throws", () => {
-        const delegateOffset = DELEGATE_CALL_FLAG << VALUE_OFFSET;
-        expect(() => validateOffset(delegateOffset)).toThrow("Unimplemented calltype");
-    });
-
     test("unknown calltype throws", () => {
         const unknown = 0xABn << VALUE_OFFSET;
         expect(() => validateOffset(unknown)).toThrow("Unknown calltype");
@@ -272,5 +266,37 @@ describe("compatibility with index.js exports", () => {
 
         const pr = idx.staticCallPartialReturn([0x04n, 0x44n], [0x20n, 0x20n], [0x00n, 0x40n], 0x60n);
         expect(pr).toBe(enc.staticCallPartialReturn([0x04n, 0x44n], [0x20n, 0x20n], [0x00n, 0x40n], 0x60n));
+    });
+});
+
+describe("untrusted offset fields", () => {
+    test("every unsigned encoder field rejects negative and inexact inputs", () => {
+        const fields = [
+            x => stateChangingCall(x), x => staticCall(x, 0), x => staticCall(0, x),
+            x => callPartialReturn(x, [0], [0], [0], 0),
+            x => staticCallPartialReturn([x], [0], [0], 0),
+            x => staticCallPartialReturn([0], [x], [0], 0),
+            x => staticCallPartialReturn([0], [0], [x], 0),
+            x => staticCallPartialReturn([0], [0], [0], x),
+        ];
+        for (const field of fields) {
+            for (const value of [-1n, -1, "-1", Number.MAX_SAFE_INTEGER + 1, true, null, ""]) {
+                expect(() => field(value)).toThrow();
+            }
+        }
+    });
+    test("all impossible partial counts are rejected before decoding", () => {
+        for (let count = 4n; count < 256n; ++count) {
+            const word = (0xFCn << 248n) | count;
+            expect(() => validateOffset(word)).toThrow("invalid number of params");
+            expect(() => decodePartialReturn(word)).toThrow("invalid number of params");
+        }
+    });
+    test("decoders reject values outside uint256", () => {
+        for (const decode of [decodeCalltype, decodeMemTarget, decodeResultLength, decodePartialReturn, validateOffset]) {
+            for (const word of [-1n, 1n << 256n, Number.MAX_SAFE_INTEGER + 1]) {
+                expect(() => decode(word)).toThrow();
+            }
+        }
     });
 });

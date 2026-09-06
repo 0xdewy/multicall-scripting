@@ -6,8 +6,9 @@
  * return value could be piped into a subsequent call, but here we just include it
  * to confirm the deposit landed.
  *
- * Note: return values from state-changing calls (approve, deposit) cannot currently
- * be chained into subsequent calls — only static call outputs support chaining.
+ * Note: the executor is a shared contract. In a real batch the USDC must arrive in the
+ * executor inside the same transaction (e.g. swapped from msg.value) and the aTokens must be
+ * minted to, or forwarded to, the user — never leave assets or allowances behind.
  */
 
 import { TransactionBuilder } from "../index.js";

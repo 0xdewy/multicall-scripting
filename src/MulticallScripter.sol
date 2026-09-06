@@ -1,258 +1,220 @@
-// SPDX-License-Identifier: GPL3
+// SPDX-License-Identifier: GPL-3.0
 pragma solidity ^0.8.28;
 
+/// @dev Offset-word bit layouts. The canonical definition is schema/offset-schema.json; the JS and
+/// Rust layers derive their constants from it and this file mirrors it by hand.
 contract Constants {
-    // GENERATED from js/offset-schema.json — the canonical source of truth for bit layouts.
-    // When adding or changing a flag, update the JSON schema first, then mirror here.
     uint256 constant PARTIAL_RETURN_VARS = 3;
+
     uint256 constant STATIC_CALL_FLAG = 0xFF;
     uint256 constant CALL_FLAG = 0xFE;
-    uint256 constant DELEGATE_CALL_FLAG = 0xFD;
     uint256 constant STATIC_CALL_PARTIAL_RETURN_FLAG = 0xFC;
     uint256 constant CALL_PARTIAL_RETURN_FLAG = 0xFB;
 
-    uint256 constant PARTIAL_RETURN_MEM_TARGET_FLAG_INDIVIDUAL = 0xFFFFFFFFFF;
-    uint256 constant PARTIAL_RETURN_RES_LENGTH_FLAG = 0xFFFFFFFFFFFF;
-    uint256 constant PARTIAL_RETURN_RET_OFFSET_FLAG = 0xFFFFFFFFFFFF;
-
+    // calltype lives in the top byte of every offset word
     uint256 constant VALUE_OFFSET = 248;
 }
 
+/// @title MulticallScripter
+/// @notice Stateless, permissionless executor for a sequence of calls whose return data can be
+/// spliced into the calldata of later calls, all inside one transaction.
+///
+/// Trust model: the caller supplies every target, calldata, offset word and value. The contract
+/// only guarantees that it executes the calls in order, splices return data exactly as the offset
+/// words describe, and reverts (bubbling the callee's revert data) if any call fails.
+///
+/// Because anyone can call `execute`, anything left in this contract — tokens, allowances, ETH —
+/// is claimable by anyone. Scripts must move every asset out before the transaction ends.
+/// Unspent `msg.value` is refunded to the caller automatically; ETH sent outside `execute` is
+/// rejected.
+///
+/// Offset word layouts (bit positions, MSB first):
+///   regular (0xFF static, 0xFE call):
+///     [8 calltype][8 valueIndex][120 memTarget][120 returnSize]
+///   partial return (0xFC static, 0xFB call):
+///     [8 calltype][8 valueIndex][3×40 memTargets][3×16 resultLengths][3×16 returnOffsets]
+///     [16 returnDataSize][8 numVars]
+///
+/// - valueIndex is 1-based into `values` (0 = send no ETH); only read for 0xFE / 0xFB.
+/// - memTarget(s) are byte offsets relative to the start of the *next* call's calldata.
+/// - returnSize (regular) / returnDataSize (partial) is the number of return-data bytes the callee
+///   must produce; fewer is a revert. Regular calls copy those bytes straight to memTarget; partial
+///   calls copy `numVars` slices (returnOffset, resultLength) → memTarget.
 contract MulticallScripter is Constants {
-    // 0x8f61746f
-    error InvalidCalltype(uint256 calltype);
-    // 0xd558ad4e
+    /// @dev 0xff633a38 — targets/offsets/frame counts must match; frames must be word-padded
+    error LengthMismatch();
+    /// @dev 0x6115f2de — unknown calltype byte, or more than 3 partial-return vars
+    error InvalidOffset(uint256 offset);
+    /// @dev 0xd558ad4e — a return-data write would land outside the calldata region
     error InvalidMemoryTarget();
+    /// @dev 0x3b1a9b29 — valueIndex exceeds values.length
+    error InvalidValueIndex();
+    /// @dev 0xcbce8a22 — callee returned fewer bytes than the offset word requires
+    error InsufficientReturnData();
+    /// @dev 0xf0c49d44 — could not refund unspent msg.value to the caller
+    error RefundFailed();
+    /// @dev 0x60f8f321 — direct ETH transfers are rejected; send value through execute()
+    error EthNotAccepted();
 
-    /*
-      This contract is a stateless executor. It must never hold token balances or
-      be granted allowances — any such funds would be accessible to any caller.
-      ETH sent directly (outside of execute()) is rejected.
-    */
     receive() external payable virtual {
-        revert("MulticallScripter: ETH not accepted");
+        revert EthNotAccepted();
     }
 
-    /*
-      Execute a sequence of calls with the ability to use return data in subsequent calls.
-    */
+    /// @notice Execute packed calldata frame `i` against `targets[i]` in order, splicing return data into
+    /// later calls as described by `offsets[i]`. Reverts on the first failing call.
+    /// @param calldatas Concatenated [uint256 length][call bytes padded to 32] frames.
+    /// @param values ETH amounts referenced by valueIndex. Unspent msg.value is refunded.
     function execute(
         address[] calldata targets,
         uint256[] calldata offsets,
-        bytes[] calldata calldatas,
+        bytes calldata calldatas,
         uint256[] calldata values
     ) public payable virtual {
-        require(targets.length == offsets.length && offsets.length == calldatas.length, "array length mismatch");
-        assembly {
-            let calldataOffset := mload(0x40)
-            let totalCalldataBytes := sub(values.offset, calldatas.offset)
+        if (targets.length != offsets.length || calldatas.length % 32 != 0) {
+            revert LengthMismatch();
+        }
 
-            // copy all calldata to memory to be used for calls later
-            // shl(5, calldatas.length) == mul(calldatas.length, 32)
-            calldatacopy(calldataOffset, add(calldatas.offset, shl(5, calldatas.length)), totalCalldataBytes)
-
-            // update free memory
-            mstore(0x40, add(calldataOffset, totalCalldataBytes))
-
-            // end of the pre-allocated calldata region. Return-data writes (which splice into
-            // later calls' calldata) must stay within it. Captured once as a fixed bound because
-            // the partial-return branches advance 0x40 for scratch space.
-            let calldataEnd := mload(0x40)
-
-            let i := 0
-            // loop through all calls and execute in order
-            for {} lt(i, calldatas.length) { i := add(i, 1) } {
-                // shl(5,i) == mul(i, 32)
-                let target := calldataload(add(targets.offset, shl(5, i)))
-                let offset := calldataload(add(offsets.offset, shl(5, i)))
-
-                let calldataLen := mload(calldataOffset)
-                // round up to nearest 32 bytes: (calldataLen + 31) / 32 * 32
-                let lengthPadded := shl(5, shr(5, add(calldataLen, 31)))
-                // preserve the start location of this calls calldata
-                let dataStart := add(calldataOffset, 0x20)
-                // advance past this call's [length][padded data] (covered by test_fuzz_partialReturn
-                // and test_staticcall_with_unpadded_calldata)
-                calldataOffset := add(calldataOffset, add(0x20, lengthPadded))
-                // 0 = no value sent, 0x01-0xFFF0 = index into params
-                let callType := shr(VALUE_OFFSET, offset)
-
-                // staticall(gas, address, argsOffset, argssize, retOffset, returnDataSize)
-                if eq(callType, STATIC_CALL_FLAG) {
-                    let returnSize := shr(136, shl(136, offset))
-                    // clear upper bits and retrieve return data offset
-                    let returnOffset := add(add(calldataOffset, 0x20), shr(136, shl(16, offset)))
-
-                    // bounds check: a return-data write must not run past the calldata region
-                    // and corrupt unrelated memory. Skipped when returnSize == 0 (no write).
-                    if and(gt(returnSize, 0), gt(add(returnOffset, returnSize), calldataEnd)) {
-                        mstore(0x00, 0xd558ad4e) // InvalidMemoryTarget()
-                        revert(0x1c, 0x04)
-                    }
-
-                    // make staticcall and bubble up revert
-                    if iszero(staticcall(gas(), target, dataStart, calldataLen, returnOffset, returnSize)) {
-                        returndatacopy(0x00, 0x00, returndatasize())
-                        revert(0x00, returndatasize())
-                    }
-
-                    continue
-                }
-
-                // call (0xFE)
-                if eq(callType, CALL_FLAG) {
-                    let returnSize := shr(136, shl(136, offset))
-                    // clean calltype flag and extract value flag
-                    let value := shr(VALUE_OFFSET, shl(8, offset))
-                    // avoid jumpi by multiplying by result of conditional (if msg.value is being used)
-                    let msgValue := mul(gt(value, 0), calldataload(add(values.offset, sub(shl(5, value), 0x20))))
-
-                    // clear upper bits and retrieve return data offset
-                    let returnOffset := add(add(calldataOffset, 0x20), shr(136, shl(16, offset)))
-
-                    // bounds check: a return-data write must not run past the calldata region
-                    // and corrupt unrelated memory. Skipped when returnSize == 0 (no write).
-                    if and(gt(returnSize, 0), gt(add(returnOffset, returnSize), calldataEnd)) {
-                        mstore(0x00, 0xd558ad4e) // InvalidMemoryTarget()
-                        revert(0x1c, 0x04)
-                    }
-
-                    // call(gas, address, value, argsOffset, argssize, retOffset, returnDataSize)
-                    if iszero(call(gas(), target, msgValue, dataStart, calldataLen, returnOffset, returnSize)) {
-                        returndatacopy(0x00, 0x00, returndatasize())
-                        revert(0x00, returndatasize())
-                    }
-
-                    continue
-                }
-
-                // static call with partial return (0xFC)
-                if eq(callType, STATIC_CALL_PARTIAL_RETURN_FLAG) {
-                    // return size is modified for this type of call
-                    let returnDataSize := shr(8, and(0xFFFF, offset))
-                    // free_mem holds the end of the pre-allocated calldata region before this update.
-                    // It doubles as the bounds-check limit for mcopy destinations (M-3).
-                    let free_mem := mload(0x40)
-                    mstore(0x40, add(free_mem, returnDataSize))
-
-                    // make static call and save results to free memory to mcopy variables
-                    if iszero(staticcall(gas(), target, dataStart, calldataLen, free_mem, returnDataSize)) {
-                        returndatacopy(0x00, 0x00, returndatasize())
-                        revert(0x00, returndatasize())
-                    }
-
-                    // all return data was added to free memory, now we need to loop through return data and memcpy to correct position
-                    // only have 240 bits for all of this, so will only support 3 variable segments. (variables already in-order count as 1 variable. just memcopy both at same time)
-                    // memTargets = uint40[3] = where the variables need to be copied to
-                    // resultLengths = uint48[3] = the length of the variables to be copied
-                    // returnOffsets = uint48[3] = offset from beginning of return data for each var
-                    // returnDataSize = uint16 = total length of return data (MAX IS 65536 -- 2048 items)
-                    // num_vars = uint8 = number of variable segments to use from last call
-
-                    // NOTE: offset has a different layout for this type of call
-                    //     8           8      120 (40x3)    48 (16x3)       48 (16x3)        16          8
-                    // <calltype><valueIndex><memTargets><resultLengths><returnOffsets><returnDataSize><num_vars>
-                    let o := offset
-                    let calldata_start := add(calldataOffset, 0x20)
-
-                    // remove calltype + value index and shift to right
-                    let memTargets := shr(136, shl(16, o))
-                    // let memTargets := and(shl(120, PARTIAL_RETURN_MEM_TARGET_FLAG), o);
-                    // remove calltype + value + memTargets
-                    let resLengths := and(PARTIAL_RETURN_RES_LENGTH_FLAG, shr(72, o))
-                    // remove calltype + value + memTargets + resultLengths
-                    let retDatas := and(PARTIAL_RETURN_RET_OFFSET_FLAG, shr(24, o))
-
-                    let num_vars := byte(31, o)
-
-                    let u := 0
-                    for {} lt(u, num_vars) { u := add(u, 1) } {
-                        // where in memory to memcpy data to
-                        let memTarget :=
-                            and(PARTIAL_RETURN_MEM_TARGET_FLAG_INDIVIDUAL, shr(mul(40, sub(2, u)), memTargets))
-                        memTarget := add(memTarget, calldata_start)
-
-                        // number of bytes to shr to access vars at this index
-                        let var_index := mul(16, sub(2, u))
-
-                        // the length of data to memcpy
-                        let resLength := and(0xFFFF, shr(var_index, resLengths))
-
-                        // bounds check: free_mem still holds the original mload(0x40) value (the end of
-                        // the pre-allocated calldata region) because it is a Yul local, not aliased to 0x40.
-                        if gt(add(memTarget, resLength), free_mem) {
-                            mstore(0x00, 0xd558ad4e) // InvalidMemoryTarget()
-                            revert(0x1c, 0x04)
-                        }
-
-                        // the offset of the return data to memcpy
-                        let returnDataOffset := and(0xFFFF, shr(var_index, retDatas))
-                        returnDataOffset := add(free_mem, returnDataOffset)
-
-                        // destOffset, offsetToCopyFrom, size
-                        mcopy(memTarget, returnDataOffset, resLength)
-                        continue
-                    }
-                    // No need to clear the scratch return-data region: it lives above the
-                    // calldata region and is never read as calldata by a subsequent call.
-                    continue
-                }
-
-                // state-changing call with partial return (0xFB)
-                // Same bit layout as 0xFC but uses call() instead of staticcall() and supports msg.value.
-                if eq(callType, CALL_PARTIAL_RETURN_FLAG) {
-                    let returnDataSize := shr(8, and(0xFFFF, offset))
-                    let free_mem := mload(0x40)
-                    mstore(0x40, add(free_mem, returnDataSize))
-
-                    // extract msg.value from the valueIndex field (same as CALL_FLAG)
-                    let value := shr(VALUE_OFFSET, shl(8, offset))
-                    let msgValue := mul(gt(value, 0), calldataload(add(values.offset, sub(shl(5, value), 0x20))))
-
-                    if iszero(call(gas(), target, msgValue, dataStart, calldataLen, free_mem, returnDataSize)) {
-                        returndatacopy(0x00, 0x00, returndatasize())
-                        revert(0x00, returndatasize())
-                    }
-
-                    let o := offset
-                    let calldata_start := add(calldataOffset, 0x20)
-                    let memTargets := shr(136, shl(16, o))
-                    let resLengths := and(PARTIAL_RETURN_RES_LENGTH_FLAG, shr(72, o))
-                    let retDatas := and(PARTIAL_RETURN_RET_OFFSET_FLAG, shr(24, o))
-                    let num_vars := byte(31, o)
-
-                    let u := 0
-                    for {} lt(u, num_vars) { u := add(u, 1) } {
-                        let memTarget :=
-                            and(PARTIAL_RETURN_MEM_TARGET_FLAG_INDIVIDUAL, shr(mul(40, sub(2, u)), memTargets))
-                        memTarget := add(memTarget, calldata_start)
-
-                        let var_index := mul(16, sub(2, u))
-                        let resLength := and(0xFFFF, shr(var_index, resLengths))
-
-                        if gt(add(memTarget, resLength), free_mem) {
-                            mstore(0x00, 0xd558ad4e) // InvalidMemoryTarget()
-                            revert(0x1c, 0x04)
-                        }
-
-                        let returnDataOffset := and(0xFFFF, shr(var_index, retDatas))
-                        returnDataOffset := add(free_mem, returnDataOffset)
-
-                        mcopy(memTarget, returnDataOffset, resLength)
-                        continue
-                    }
-                    continue
-                }
-
-                // delegate call (0xFD) is not yet implemented — revert explicitly rather than silently skipping
-                if eq(callType, DELEGATE_CALL_FLAG) {
-                    mstore(0x00, 0x8f61746f) // InvalidCalltype(uint256)
-                    revert(0x00, 0x20)
-                }
-
-                mstore(0x00, 0x8f61746f)
-                revert(0x00, 0x20)
+        assembly ("memory-safe") {
+            function fail(selector) {
+                mstore(0x00, selector)
+                revert(0x1c, 0x04)
             }
+            function failOffset(offset) {
+                mstore(0x00, shl(224, 0x6115f2de)) // InvalidOffset(uint256)
+                mstore(0x04, offset)
+                revert(0x00, 0x24)
+            }
+
+            // Copy partial slices directly from the EVM return-data buffer. No scratch allocation
+            // or intermediate copy is needed; all slices read the same immutable return data.
+            function splice(offset, nextArgs) {
+                let retSize := and(shr(8, offset), 0xFFFF)
+                let numVars := and(offset, 0xFF)
+                if lt(returndatasize(), retSize) { fail(0xcbce8a22) } // InsufficientReturnData()
+                if gt(numVars, 0) {
+                    let size := and(shr(104, offset), 0xFFFF)
+                    let source := and(shr(56, offset), 0xFFFF)
+                    let dest := add(nextArgs, and(shr(200, offset), 0xFFFFFFFFFF))
+                    if gt(add(dest, size), mload(0x40)) { fail(0xd558ad4e) } // InvalidMemoryTarget()
+                    if gt(add(source, size), retSize) { fail(0xcbce8a22) } // InsufficientReturnData()
+                    returndatacopy(dest, source, size)
+                }
+                if gt(numVars, 1) {
+                    let size := and(shr(88, offset), 0xFFFF)
+                    let source := and(shr(40, offset), 0xFFFF)
+                    let dest := add(nextArgs, and(shr(160, offset), 0xFFFFFFFFFF))
+                    if gt(add(dest, size), mload(0x40)) { fail(0xd558ad4e) } // InvalidMemoryTarget()
+                    if gt(add(source, size), retSize) { fail(0xcbce8a22) } // InsufficientReturnData()
+                    returndatacopy(dest, source, size)
+                }
+                if gt(numVars, 2) {
+                    let size := and(shr(72, offset), 0xFFFF)
+                    let source := and(shr(24, offset), 0xFFFF)
+                    let dest := add(nextArgs, and(shr(120, offset), 0xFFFFFFFFFF))
+                    if gt(add(dest, size), mload(0x40)) { fail(0xd558ad4e) } // InvalidMemoryTarget()
+                    if gt(add(source, size), retSize) { fail(0xcbce8a22) } // InsufficientReturnData()
+                    returndatacopy(dest, source, size)
+                }
+            }
+
+            function callValue(offset) -> value {
+                let idx := byte(1, offset)
+                if idx {
+                    if gt(idx, calldataload(sub(mload(0x20), 0x20))) { fail(0x3b1a9b29)} // InvalidValueIndex()
+                    value := calldataload(add(mload(0x20), shl(5, sub(idx, 1))))
+                    mstore(0x60, add(mload(0x60), value))
+                }
+            }
+
+            function bubble() {
+                let data := mload(0x40)
+                returndatacopy(data, 0, returndatasize())
+                revert(data, returndatasize())
+            }
+
+            // Dispatch once. Each branch performs exactly one call and only its own decoding.
+            function step(target, offset, args, argsLen, nextArgs) {
+                switch shr(248, offset)
+                case 0xFC {
+                    if gt(and(offset, 0xFF), PARTIAL_RETURN_VARS) { failOffset(offset) }
+                    if iszero(staticcall(gas(), target, args, argsLen, 0, 0)) { bubble() }
+                    splice(offset, nextArgs)
+                    leave
+                }
+                case 0xFB {
+                    if gt(and(offset, 0xFF), PARTIAL_RETURN_VARS) { failOffset(offset) }
+                    let value := callValue(offset)
+                    if iszero(call(gas(), target, value, args, argsLen, 0, 0)) { bubble() }
+                    splice(offset, nextArgs)
+                    leave
+                }
+                default { failOffset(offset) }
+            }
+
+            // Packed frames are [length][calldata padded to 32]. Every byte of this buffer is
+            // part of the signed input, so one copy replaces per-element ABI normalization.
+            let ptr := mload(0x40)
+            let regionEnd := add(ptr, calldatas.length)
+            calldatacopy(ptr, calldatas.offset, calldatas.length)
+            mstore(0x40, regionEnd)
+
+            // The value table is cold-path metadata. Scratch slots avoid keeping it live on
+            // the stack across every static call; callees have their own EVM memory.
+            let targetDelta := sub(targets.offset, offsets.offset)
+            mstore(0x20, values.offset)
+            // Temporarily use the zero slot for spent ETH; restore it before returning to Solidity.
+            mstore(0x60, 0)
+
+            // ---- 2. Run the calls
+            let offsetsEnd := add(offsets.offset, shl(5, offsets.length))
+            for { let head := offsets.offset } lt(head, offsetsEnd) { head := add(head, 0x20) } {
+                let argsLen := mload(ptr)
+                let args := add(ptr, 0x20)
+                ptr := add(args, and(add(argsLen, 31), not(31)))
+                // The length bound rejects wraparound; the padded end bound includes the header.
+                // regionEnd is backed by the memory already expanded by calldatacopy above.
+                if or(gt(argsLen, regionEnd), gt(ptr, regionEnd)) { fail(0xd558ad4e) }
+                let offset := calldataload(head)
+                let target := calldataload(add(head, targetDelta))
+                let nextArgs := add(ptr, 0x20)
+                if eq(shr(248, offset), 0xFF) {
+                    let size := and(offset, 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF)
+                    if iszero(size) {
+                        if iszero(staticcall(gas(), target, args, argsLen, 0, 0)) { bubble() }
+                        continue
+                    }
+                    let dest := add(nextArgs, and(shr(120, offset), 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF))
+                    if gt(add(dest, size), mload(0x40)) { fail(0xd558ad4e) }
+                    if iszero(staticcall(gas(), target, args, argsLen, dest, size)) { bubble() }
+                    if lt(returndatasize(), size) { fail(0xcbce8a22) }
+                    continue
+                }
+                if eq(shr(248, offset), 0xFE) {
+                    let value := callValue(offset)
+                    let size := and(offset, 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF)
+                    if iszero(size) {
+                        if iszero(call(gas(), target, value, args, argsLen, 0, 0)) { bubble() }
+                        continue
+                    }
+                    let dest := add(nextArgs, and(shr(120, offset), 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF))
+                    if gt(add(dest, size), mload(0x40)) { fail(0xd558ad4e) }
+                    if iszero(call(gas(), target, value, args, argsLen, dest, size)) { bubble() }
+                    if lt(returndatasize(), size) { fail(0xcbce8a22) }
+                    continue
+                }
+                step(target, offset, args, argsLen, nextArgs)
+            }
+
+            // The frame count must exactly match the target/offset count.
+            if iszero(eq(ptr, mload(0x40))) { fail(0xff633a38) } // LengthMismatch()
+
+            // ---- 3. Refund unspent msg.value so nothing is left for the next caller to sweep
+            if gt(callvalue(), mload(0x60)) {
+                if iszero(call(gas(), caller(), sub(callvalue(), mload(0x60)), 0x00, 0x00, 0x00, 0x00)) {
+                    fail(0xf0c49d44) // RefundFailed()
+                }
+            }
+            mstore(0x60, 0)
         }
     }
 }

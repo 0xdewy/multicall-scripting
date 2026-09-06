@@ -2,8 +2,8 @@
 //!
 //! Direct port of `js/encoding.js`. All constants and the bit layout are generated at build time
 //! from `schema/offset-schema.json` (the canonical source of truth shared with the Solidity and
-//! JavaScript layers) — see `build.rs`. The Solidity contracts (`src/MulticallScripter.sol`,
-//! `src/CallBuilder.sol`) must mirror these definitions exactly.
+//! JavaScript layers) — see `build.rs`. `src/MulticallScripter.sol` must mirror these definitions
+//! exactly.
 
 use alloy_primitives::U256;
 use thiserror::Error;
@@ -31,8 +31,6 @@ pub enum CodecError {
     MismatchedLengths,
     #[error("Unknown calltype: 0x{0:x}")]
     UnknownCalltype(u8),
-    #[error("Unimplemented calltype: {0}")]
-    UnimplementedCalltype(String),
 }
 
 #[inline]
@@ -59,7 +57,9 @@ pub fn static_call(mem_target: U256, result_length: U256) -> Result<U256, CodecE
     if result_length > uint120_max() {
         return Err(CodecError::ResultLengthTooLarge);
     }
-    Ok((U256::from(STATIC_CALL_FLAG) << (VALUE_OFFSET as usize)) | (mem_target << 120usize) | result_length)
+    Ok((U256::from(STATIC_CALL_FLAG) << (VALUE_OFFSET as usize))
+        | (mem_target << 120usize)
+        | result_length)
 }
 
 /// Mirrors `stateChangingCall(msgValueIndex = 0)`.
@@ -67,7 +67,8 @@ pub fn state_changing_call(msg_value_index: u64) -> Result<U256, CodecError> {
     if msg_value_index > 0xFF {
         return Err(CodecError::MsgValueIndexTooLarge);
     }
-    Ok((U256::from(CALL_FLAG) << (VALUE_OFFSET as usize)) | (U256::from(msg_value_index) << 240usize))
+    Ok((U256::from(CALL_FLAG) << (VALUE_OFFSET as usize))
+        | (U256::from(msg_value_index) << 240usize))
 }
 
 /// Mirrors `staticCallPartialReturn(memTargets, resultLengths, returnOffsets, returnDataSize)`.
@@ -203,8 +204,11 @@ pub struct PartialReturn {
     pub num_vars: u32,
 }
 
-pub fn decode_partial_return(offset: U256) -> PartialReturn {
+pub fn decode_partial_return(offset: U256) -> Result<PartialReturn, CodecError> {
     let num_vars = as_u64(offset & U256::from(0xFFu64)) as u32;
+    if num_vars > PARTIAL_RETURN_VARS {
+        return Err(CodecError::InvalidNumberOfParams);
+    }
     let return_data_size = as_u64((offset >> 8usize) & U256::from(0xFFFFu64));
 
     let raw_return_offsets = (offset >> 24usize) & U256::from(0xFFFFFFFFFFFFu64);
@@ -218,32 +222,39 @@ pub fn decode_partial_return(offset: U256) -> PartialReturn {
     for i in 0..num_vars as usize {
         let var_shift = (PARTIAL_RETURN_VARS as usize - (i + 1)) * 40;
         let small_shift = (PARTIAL_RETURN_VARS as usize - (i + 1)) * 16;
-        mem_targets.push(as_u64((raw_mem_targets >> var_shift) & U256::from(0xFFFFFFFFFFu64)));
-        result_lengths.push(as_u64((raw_result_lengths >> small_shift) & U256::from(0xFFFFu64)));
-        return_offsets.push(as_u64((raw_return_offsets >> small_shift) & U256::from(0xFFFFu64)));
+        mem_targets.push(as_u64(
+            (raw_mem_targets >> var_shift) & U256::from(0xFFFFFFFFFFu64),
+        ));
+        result_lengths.push(as_u64(
+            (raw_result_lengths >> small_shift) & U256::from(0xFFFFu64),
+        ));
+        return_offsets.push(as_u64(
+            (raw_return_offsets >> small_shift) & U256::from(0xFFFFu64),
+        ));
     }
 
-    PartialReturn {
+    Ok(PartialReturn {
         mem_targets,
         result_lengths,
         return_offsets,
         return_data_size,
         num_vars,
-    }
+    })
 }
 
-/// Mirrors `validateOffset`: rejects unknown calltypes and flags marked `unimplemented` in the
-/// schema (e.g. DELEGATE_CALL 0xFD).
+/// Mirrors `validateOffset`: rejects calltype bytes the executor does not understand.
 pub fn validate_offset(offset: U256) -> Result<(), CodecError> {
     let calltype = decode_calltype(offset);
-    match FLAGS.iter().find(|(value, _, _)| *value == calltype) {
-        None => Err(CodecError::UnknownCalltype(calltype)),
-        Some((_, name, implemented)) => {
-            if *implemented {
-                Ok(())
-            } else {
-                Err(CodecError::UnimplementedCalltype((*name).to_string()))
-            }
+    if FLAGS.iter().any(|(value, _)| *value == calltype) {
+        if matches!(
+            calltype,
+            STATIC_CALL_PARTIAL_RETURN_FLAG | CALL_PARTIAL_RETURN_FLAG
+        ) && as_u64(offset & U256::from(0xFFu64)) > PARTIAL_RETURN_VARS as u64
+        {
+            return Err(CodecError::InvalidNumberOfParams);
         }
+        Ok(())
+    } else {
+        Err(CodecError::UnknownCalltype(calltype))
     }
 }

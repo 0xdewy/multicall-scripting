@@ -1,10 +1,11 @@
-// SPDX-License-Identifier: GPL3
+// SPDX-License-Identifier: GPL-3.0
 pragma solidity ^0.8.28;
 
 import {Test, console} from "forge-std/Test.sol";
 import "forge-std/StdJson.sol";
-import {CallBuilder, CallDecoder} from "src/CallBuilder.sol";
+import {CallBuilder, CallDecoder} from "./CallBuilder.sol";
 import {MulticallScripter} from "src/MulticallScripter.sol";
+import {MulticallScripterReadOnly} from "src/MulticallScripterReadOnly.sol";
 import {
     Math,
     SimpleReturn,
@@ -13,10 +14,11 @@ import {
     Structs,
     DynamicVar,
     ArrayElementAccess,
-    StringAndBytesOperations
+    StringAndBytesOperations,
+    Layouts
 } from "./Helpers.sol";
 
-contract JsLibrary is Test, CallBuilder, MulticallScripter {
+contract JsLibrary is Test, CallBuilder {
     MulticallScripter multicall;
     CallDecoder callDecoder;
 
@@ -28,6 +30,7 @@ contract JsLibrary is Test, CallBuilder, MulticallScripter {
     DynamicVar dynamicVar;
     ArrayElementAccess arrayElementAccess;
     StringAndBytesOperations stringAndBytesOps;
+    Layouts layouts;
 
     address[] targets;
     uint256[] offsets;
@@ -50,6 +53,68 @@ contract JsLibrary is Test, CallBuilder, MulticallScripter {
         dynamicVar = new DynamicVar();
         arrayElementAccess = new ArrayElementAccess();
         stringAndBytesOps = new StringAndBytesOperations();
+        layouts = new Layouts();
+    }
+
+    function _runJs(string memory script, address target, string memory abiPath) internal {
+        string[] memory inputs = new string[](4);
+        inputs[0] = "bun";
+        inputs[1] = script;
+        inputs[2] = vm.toString(target);
+        inputs[3] = abiPath;
+        string memory json = string(vm.ffi(inputs));
+        multicall.execute(
+            vm.parseJsonAddressArray(json, ".targets"),
+            vm.parseJsonUintArray(json, ".offsets"),
+            vm.parseJsonBytes(json, ".calldatas"),
+            vm.parseJsonUintArray(json, ".msgValues")
+        );
+    }
+
+    // the same JS-built batch runs through the read-only executor and returns every result
+    function test_js_readonly() public {
+        MulticallScripterReadOnly reader = new MulticallScripterReadOnly();
+        string[] memory inputs = new string[](4);
+        inputs[0] = "bun";
+        inputs[1] = "js/test/readonly.js";
+        inputs[2] = vm.toString(address(arrayElementAccess));
+        inputs[3] = "out/Helpers.sol/ArrayElementAccess.json";
+        string memory json = string(vm.ffi(inputs));
+
+        bytes[] memory results = reader.execute(
+            vm.parseJsonAddressArray(json, ".targets"),
+            vm.parseJsonUintArray(json, ".offsets"),
+            vm.parseJsonBytes(json, ".calldatas"),
+            vm.parseJsonUintArray(json, ".msgValues")
+        );
+
+        assertEq(results.length, 3);
+        uint256[] memory numbers = abi.decode(results[0], (uint256[]));
+        assertEq(numbers[2], 300);
+        assertEq(abi.decode(results[1], (uint256)), 300, "numbers[0] + numbers[1]");
+        assertEq(abi.decode(results[2], (uint256)), 600, "a + numbers[2], consumed two calls later");
+    }
+
+    // one batch covering every calldata / return-data layout the builder positions (see layouts.js)
+    function test_js_layouts() public {
+        _runJs("js/test/layouts.js", address(layouts), "out/Helpers.sol/Layouts.json");
+
+        // setStaticThenWord({100, item.id = 7}, getWord() = 0xC0FFEE) then setNums(count = 3, ...)
+        assertEq(layouts.x(), 2 * 0xC0FFEE, "one descriptor feeds both tuple fields");
+        assertEq(layouts.y(), 0xC0FFEE, "word spliced after a static tuple parameter");
+        assertEq(layouts.numsLength(), 3);
+        assertEq(layouts.nums(0), 30, "nums[2] spliced into array element 0");
+        assertEq(layouts.nums(1), 5);
+        assertEq(layouts.nums(2), 10, "nums[0] spliced into array element 2");
+        assertEq(layouts.pairsLength(), 2);
+        (uint256 a0, uint256 b0) = layouts.pairs(0);
+        (uint256 a1, uint256 b1) = layouts.pairs(1);
+        assertEq(a0, 4, "pairs[1].nB spliced into a struct inside an array");
+        assertEq(b0, 9);
+        assertEq(a1, 8);
+        assertEq(b1, 1, "pairs[0].nA spliced into a struct inside an array");
+        assertEq(layouts.text(), unicode"héllo ✓");
+        assertEq(layouts.text2(), "seven", "dynamic tuple field spliced after a non-ASCII literal");
     }
 
     function test_js_complex_structs() public {
@@ -70,7 +135,7 @@ contract JsLibrary is Test, CallBuilder, MulticallScripter {
         bytes memory jsOffsets = vm.parseJson(json, ".offsets");
         uint256[] memory jsOffsetsArray = abi.decode(jsOffsets, (uint256[]));
         bytes memory jsCalldatas = vm.parseJson(json, ".calldatas");
-        bytes[] memory jsCalldatasArray = abi.decode(jsCalldatas, (bytes[]));
+        bytes memory jsCalldatasArray = abi.decode(jsCalldatas, (bytes));
         bytes memory jsMsgValues = vm.parseJson(json, ".msgValues");
         uint256[] memory jsMsgValuesArray = abi.decode(jsMsgValues, (uint256[]));
 
@@ -81,17 +146,15 @@ contract JsLibrary is Test, CallBuilder, MulticallScripter {
         // Total: 2 calls
         assertEq(jsTargetsArray.length, 2, "Should have 2 calls");
         assertEq(jsOffsetsArray.length, 2, "Should have 2 offsets");
-        assertEq(jsCalldatasArray.length, 2, "Should have 2 calldatas");
         assertEq(jsMsgValuesArray.length, 0, "Should have 0 msgValues");
 
-        // Execute the transaction
         multicall.execute(jsTargetsArray, jsOffsetsArray, jsCalldatasArray, jsMsgValuesArray);
 
-        // Note: We can't verify the exact struct values because:
-        // 1. The JavaScript test uses descriptor values which have defaults (0)
-        // 2. The actual contract returns different values (100, 200, 300)
-        // 3. We removed the hardcoded values that were masking this issue
-        // The test at least verifies that struct operations don't revert
+        // setComplexStruct({a: 1, nested: {nA: 2, nB: getConstantStruct().nested.nB = 300}})
+        Structs.Complex memory stored = structs.getComplexStruct();
+        assertEq(stored.a, 1);
+        assertEq(stored.nested.nA, 2);
+        assertEq(stored.nested.nB, 300, "descriptor inside a nested struct argument");
     }
 
     function test_js_raw_data_simple_value() public {
@@ -117,7 +180,7 @@ contract JsLibrary is Test, CallBuilder, MulticallScripter {
         bytes memory jsOffsets = vm.parseJson(json, ".offsets");
         uint256[] memory jsOffsetsArray = abi.decode(jsOffsets, (uint256[]));
         bytes memory jsCalldatas = vm.parseJson(json, ".calldatas");
-        bytes[] memory jsCalldatasArray = abi.decode(jsCalldatas, (bytes[]));
+        bytes memory jsCalldatasArray = abi.decode(jsCalldatas, (bytes));
         bytes memory jsMsgValues = vm.parseJson(json, ".msgValues");
         uint256[] memory jsMsgValuesArray = abi.decode(jsMsgValues, (uint256[]));
 
@@ -132,10 +195,7 @@ contract JsLibrary is Test, CallBuilder, MulticallScripter {
             assertEq(jsOffsetsArray[i], offsets[i], "offsets mismatch");
         }
 
-        assertEq(jsCalldatasArray.length, calldatas.length, "calldata length mismatch");
-        for (uint256 i = 0; i < calldatas.length; i++) {
-            assertEq(keccak256(jsCalldatasArray[i]), keccak256(calldatas[i]), "calldatas mismatch");
-        }
+        assertEq(jsCalldatasArray, pack(calldatas), "packed calldatas mismatch");
 
         // The number of msgValues should equal the number of targets
         uint256 totalValue = 0;
@@ -205,7 +265,7 @@ contract JsLibrary is Test, CallBuilder, MulticallScripter {
         bytes memory jsOffsets = vm.parseJson(json, ".offsets");
         uint256[] memory jsOffsetsArray = abi.decode(jsOffsets, (uint256[]));
         bytes memory jsCalldatas = vm.parseJson(json, ".calldatas");
-        bytes[] memory jsCalldatasArray = abi.decode(jsCalldatas, (bytes[]));
+        bytes memory jsCalldatasArray = abi.decode(jsCalldatas, (bytes));
         bytes memory jsMsgValues = vm.parseJson(json, ".msgValues");
         uint256[] memory jsMsgValuesArray = abi.decode(jsMsgValues, (uint256[]));
 
@@ -220,10 +280,7 @@ contract JsLibrary is Test, CallBuilder, MulticallScripter {
             assertEq(jsOffsetsArray[i], offsets[i], "offsets mismatch");
         }
 
-        assertEq(jsCalldatasArray.length, calldatas.length, "calldata length mismatch");
-        for (uint256 i = 0; i < calldatas.length; i++) {
-            assertEq(keccak256(jsCalldatasArray[i]), keccak256(calldatas[i]), "calldatas mismatch");
-        }
+        assertEq(jsCalldatasArray, pack(calldatas), "packed calldatas mismatch");
 
         // Since all msgValues are 0, and values is empty, we need to compare against an array of zeros
         // The number of msgValues should equal the number of targets
@@ -257,13 +314,12 @@ contract JsLibrary is Test, CallBuilder, MulticallScripter {
         // Extract arrays from JSON
         address[] memory jsTargetsArray = vm.parseJsonAddressArray(json, ".targets");
         uint256[] memory jsOffsetsArray = vm.parseJsonUintArray(json, ".offsets");
-        bytes[] memory jsCalldatasArray = vm.parseJsonBytesArray(json, ".calldatas");
+        bytes memory jsCalldatasArray = vm.parseJsonBytes(json, ".calldatas");
         uint256[] memory jsMsgValuesArray = vm.parseJsonUintArray(json, ".msgValues");
 
         // Verify the arrays have the same length
         assertEq(jsTargetsArray.length, 1);
         assertEq(jsOffsetsArray.length, 1);
-        assertEq(jsCalldatasArray.length, 1);
         assertEq(jsMsgValuesArray.length, 0); // No msgValues expected
 
         // Execute the transaction
@@ -295,13 +351,12 @@ contract JsLibrary is Test, CallBuilder, MulticallScripter {
         // Extract arrays from JSON
         address[] memory jsTargetsArray = vm.parseJsonAddressArray(json, ".targets");
         uint256[] memory jsOffsetsArray = vm.parseJsonUintArray(json, ".offsets");
-        bytes[] memory jsCalldatasArray = vm.parseJsonBytesArray(json, ".calldatas");
+        bytes memory jsCalldatasArray = vm.parseJsonBytes(json, ".calldatas");
         uint256[] memory jsMsgValuesArray = vm.parseJsonUintArray(json, ".msgValues");
 
         // Verify we have 2 calls (setAddresses and getAddresses)
         assertEq(jsTargetsArray.length, 2);
         assertEq(jsOffsetsArray.length, 2);
-        assertEq(jsCalldatasArray.length, 2);
         // msgValues should be empty since all calls have msgValue = 0
         assertEq(jsMsgValuesArray.length, 0);
 
@@ -337,13 +392,12 @@ contract JsLibrary is Test, CallBuilder, MulticallScripter {
         // Extract arrays from JSON
         address[] memory jsTargetsArray = vm.parseJsonAddressArray(json, ".targets");
         uint256[] memory jsOffsetsArray = vm.parseJsonUintArray(json, ".offsets");
-        bytes[] memory jsCalldatasArray = vm.parseJsonBytesArray(json, ".calldatas");
+        bytes memory jsCalldatasArray = vm.parseJsonBytes(json, ".calldatas");
         uint256[] memory jsMsgValuesArray = vm.parseJsonUintArray(json, ".msgValues");
 
         // Verify we have 2 calls (getConstantAddresses and setAddresses)
         assertEq(jsTargetsArray.length, 2);
         assertEq(jsOffsetsArray.length, 2);
-        assertEq(jsCalldatasArray.length, 2);
         // msgValues should be empty since all calls have msgValue = 0
         assertEq(jsMsgValuesArray.length, 0);
 
@@ -375,7 +429,7 @@ contract JsLibrary is Test, CallBuilder, MulticallScripter {
         // Parse the JSON output
         address[] memory jsTargetsArray = vm.parseJsonAddressArray(json, ".targets");
         uint256[] memory jsOffsetsArray = vm.parseJsonUintArray(json, ".offsets");
-        bytes[] memory jsCalldatasArray = vm.parseJsonBytesArray(json, ".calldatas");
+        bytes memory jsCalldatasArray = vm.parseJsonBytes(json, ".calldatas");
         uint256[] memory jsMsgValuesArray = vm.parseJsonUintArray(json, ".msgValues");
         multicall.execute(jsTargetsArray, jsOffsetsArray, jsCalldatasArray, jsMsgValuesArray);
 
@@ -401,7 +455,7 @@ contract JsLibrary is Test, CallBuilder, MulticallScripter {
         // Parse the JSON output
         address[] memory jsTargetsArray = vm.parseJsonAddressArray(json, ".targets");
         uint256[] memory jsOffsetsArray = vm.parseJsonUintArray(json, ".offsets");
-        bytes[] memory jsCalldatasArray = vm.parseJsonBytesArray(json, ".calldatas");
+        bytes memory jsCalldatasArray = vm.parseJsonBytes(json, ".calldatas");
         uint256[] memory jsMsgValuesArray = vm.parseJsonUintArray(json, ".msgValues");
 
         // Execute the transaction
@@ -424,7 +478,7 @@ contract JsLibrary is Test, CallBuilder, MulticallScripter {
         // Parse the JSON output
         address[] memory jsTargetsArray = vm.parseJsonAddressArray(json, ".targets");
         uint256[] memory jsOffsetsArray = vm.parseJsonUintArray(json, ".offsets");
-        bytes[] memory jsCalldatasArray = vm.parseJsonBytesArray(json, ".calldatas");
+        bytes memory jsCalldatasArray = vm.parseJsonBytes(json, ".calldatas");
         uint256[] memory jsMsgValuesArray = vm.parseJsonUintArray(json, ".msgValues");
         // Execute the transaction
         multicall.execute(jsTargetsArray, jsOffsetsArray, jsCalldatasArray, jsMsgValuesArray);
