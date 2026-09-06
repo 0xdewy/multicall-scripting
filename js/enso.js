@@ -9,6 +9,7 @@ const DATA = 0x20, EXTENDED = 0x40, TUPLE_RETURN = 0x80;
 const VARIABLE = 0x80, VALUE_MASK = 0x7f, END = 0xff;
 const USE_STATE = 0xfe, ARRAY_START = 0xfd, TUPLE_START = 0xfc, DYNAMIC_END = 0xfb;
 const SPECIAL_INDICES = new Set([USE_STATE, ARRAY_START, TUPLE_START, DYNAMIC_END]);
+const IDENTITY_PRECOMPILE = "0x0000000000000000000000000000000000000004";
 const strip0x = (value) => value.slice(2);
 const byteLength = (value) => strip0x(value).length / 2;
 const pad32 = (n) => Math.ceil(n / 32) * 32;
@@ -190,23 +191,57 @@ export function buildEnsoDelegateBatch(response, {caller, routingStrategy}) {
         slots[outputSlot] = {data: "0x", producer: callIndex, dynamic: Boolean((flags & TUPLE_RETURN) || (output & VARIABLE))};
     }
 
-    const patches = calls.map(() => []);
+    // A producer can name three destinations in one offset word. For larger fan-out, insert
+    // 32-byte identity-precompile relays immediately after it. Each relay consumes one destination
+    // and creates three more without changing the value or relying on a deployed helper contract.
+    const uses = calls.map(() => []);
     calls.forEach((call, consumer) => {
         for (const dependency of call.dependencies) {
             const producer = calls[dependency.producer];
             if (!producer || dependency.producer >= consumer) throw new Error("Enso command dependency is not produced by an earlier call");
-            const memTarget = calls.slice(dependency.producer + 1, consumer)
-                .reduce((sum, item) => sum + regionSize(item.data), 0) + dependency.position;
-            patches[dependency.producer].push(memTarget);
+            uses[dependency.producer].push({consumer, position: dependency.position});
         }
     });
-    const targets = calls.map(call => call.target);
+    const expanded = [], oldToNew = [], relays = [];
+    calls.forEach((call, oldIndex) => {
+        oldToNew[oldIndex] = expanded.length;
+        expanded.push(call);
+        const relayIndexes = [];
+        const relayCount = uses[oldIndex].length > 3 ? Math.ceil((uses[oldIndex].length - 3) / 2) : 0;
+        for (let i = 0; i < relayCount; i++) {
+            relayIndexes.push(expanded.length);
+            expanded.push({
+                target: IDENTITY_PRECOMPILE, data: "0x" + "00".repeat(32), value: 0n,
+                isStatic: true, dependencies: [],
+            });
+        }
+        relays[oldIndex] = relayIndexes;
+    });
+    const patches = expanded.map(() => []);
+    uses.forEach((producerUses, oldProducer) => {
+        const sources = [oldToNew[oldProducer], ...relays[oldProducer]];
+        let cursor = 0;
+        sources.forEach((source, level) => {
+            const hasNext = level + 1 < sources.length;
+            const directCount = Math.min(hasNext ? 2 : 3, producerUses.length - cursor);
+            for (let i = 0; i < directCount; i++, cursor++) {
+                const use = producerUses[cursor];
+                patches[source].push({consumer: oldToNew[use.consumer], position: use.position});
+            }
+            if (hasNext) patches[source].push({consumer: sources[level + 1], position: 0});
+        });
+        if (cursor !== producerUses.length) throw new Error("Could not expand Enso return-value fan-out");
+    });
+    const memTargets = patches.map((destinations, producer) => destinations.map(destination =>
+        expanded.slice(producer + 1, destination.consumer)
+            .reduce((sum, item) => sum + regionSize(item.data), 0) + destination.position));
+    const targets = expanded.map(call => call.target);
     const msgValues = [];
-    const offsets = calls.map((call, i) => {
+    const offsets = expanded.map((call, i) => {
         let valueIndex = 0;
         if (call.value > 0n) { msgValues.push(call.value); valueIndex = msgValues.length; }
-        const destinations = patches[i];
-        if (destinations.length > 3) throw new Error(`Enso call #${i} feeds ${destinations.length} arguments; Scripter supports at most 3`);
+        const destinations = memTargets[i];
+        if (destinations.length > 3) throw new Error("Internal fan-out expansion exceeded three destinations");
         if (destinations.length === 0) return call.isStatic ? staticCall(0, 0) : stateChangingCall(valueIndex);
         if (destinations.length === 1) return call.isStatic
             ? staticCall(destinations[0], 32) : stateChangingCall(valueIndex, destinations[0], 32);
@@ -216,6 +251,7 @@ export function buildEnsoDelegateBatch(response, {caller, routingStrategy}) {
             : callPartialReturn(valueIndex, destinations, lengths, sources, 32);
     });
     const requiredValue = preTransactions.reduce((sum, tx) => sum + tx.value, main.value);
-    return {batch: {targets, offsets, calldatas: packFrames(calls), msgValues}, value: requiredValue,
-        commandCount: calls.length - preTransactions.length};
+    return {batch: {targets, offsets, calldatas: packFrames(expanded), msgValues}, value: requiredValue,
+        commandCount: expanded.length - preTransactions.length,
+        relayCount: relays.reduce((sum, indexes) => sum + indexes.length, 0)};
 }

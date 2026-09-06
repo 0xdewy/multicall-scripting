@@ -73,6 +73,20 @@ describe("Enso delegate translator", () => {
         expect(frames(batch.calldatas)[0]).toBe(`0x12345678${Array.from({length: 7}, (_, i) => stateWord(i).slice(2)).join("")}`);
     });
 
+    test("expands scalar fan-out beyond three destinations through the identity precompile", () => {
+        const producer = command("0x12345678", 0x02, [], 0);
+        const consumers = Array.from({length: 4}, () => command("0x87654321", 0x01, [0], 0xff));
+        const {batch, commandCount, relayCount} = buildEnsoDelegateBatch(
+            response([producer, ...consumers], [ZERO]),
+            {caller: CALLER, routingStrategy: "delegate"},
+        );
+        expect(commandCount).toBe(6);
+        expect(relayCount).toBe(1);
+        expect(batch.targets[1]).toBe("0x0000000000000000000000000000000000000004");
+        expect(frames(batch.calldatas)[1]).toBe(ZERO);
+        expect(batch.offsets).toHaveLength(6);
+    });
+
     test.each([
         ["router strategy", response([], []), {routingStrategy: "router"}],
         ["non-shortcut calldata", {tx: {from: CALLER, to: TOKEN, value: "0", data: "0x12345678"}}, {}],

@@ -37,6 +37,10 @@ const command = (selector, flags, indices, output, target) =>
 const commands = [
     command("0xd0e30db0", 0x03, [0], 0xff, weth),              // WETH.deposit{value: amount}()
     command("0x70a08231", 0x02, [1], 2, weth),                 // amount = WETH.balanceOf(account)
+    command("0x70a08231", 0x02, [2], 0xff, weth),              // exercise five-way scalar fan-out
+    command("0x70a08231", 0x02, [2], 0xff, weth),
+    command("0x70a08231", 0x02, [2], 0xff, weth),
+    command("0x70a08231", 0x02, [2], 0xff, weth),
     command("0xa9059cbb", 0x01, [3, 2], 0xff, weth),           // WETH.transfer(receiver, amount)
 ];
 const state = [word(amount), addressWord(account.address), "0x", addressWord(receiver)];
@@ -65,4 +69,4 @@ assert.equal(scripterReceived, ensoReceived);
 assert.equal(scripterReceived, amount);
 const delta = scripterReceipt.gasUsed - ensoReceipt.gasUsed;
 const percent = Number(delta * 10_000n / ensoReceipt.gasUsed) / 100;
-console.log(`PASS same 3-call Weiroll plan: Enso VM ${ensoReceipt.gasUsed} gas; Scripter ${scripterReceipt.gasUsed} gas; ${delta} (${percent}%)`);
+console.log(`PASS same 7-command Weiroll plan with scalar fan-out: Enso VM ${ensoReceipt.gasUsed} gas; Scripter ${scripterReceipt.gasUsed} gas; ${delta} (${percent}%)`);

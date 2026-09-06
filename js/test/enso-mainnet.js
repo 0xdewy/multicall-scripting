@@ -96,7 +96,7 @@ async function compare(label, outputToken, response, required) {
         console.log(message);
         return null;
     }
-    const {batch, value, commandCount} = translated;
+    const {batch, value, commandCount, relayCount} = translated;
     const snapshot = await client.request({method: "evm_snapshot"});
     await client.request({method: "anvil_setCode", params: [account.address, `0xef0100${ENSO_EIP7702.slice(2)}`]});
     const before = await client.readContract({address: outputToken, abi: erc20, functionName: "balanceOf", args: [receiver]});
@@ -131,7 +131,7 @@ async function compare(label, outputToken, response, required) {
     }
     const delta = receipt.gasUsed - ensoGas;
     const percent = Number(delta * 10_000n / ensoGas) / 100;
-    console.log(`PASS ${label}: ${routeSteps} route steps; ${commandCount} calls; ${txBytes} tx bytes; Enso VM ${ensoGas} gas; Scripter ${receipt.gasUsed} gas; ${delta} (${percent}%); output ${received}`);
+    console.log(`PASS ${label}: ${routeSteps} route steps; ${commandCount} calls (${relayCount} relays); ${txBytes} tx bytes; Enso VM ${ensoGas} gas; Scripter ${receipt.gasUsed} gas; ${delta} (${percent}%); output ${received}`);
     return {label, commandCount, txBytes, ensoGas, scripterGas: receipt.gasUsed};
 }
 
