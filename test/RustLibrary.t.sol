@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL3
+// SPDX-License-Identifier: GPL-3.0
 pragma solidity ^0.8.28;
 
 import {Test} from "forge-std/Test.sol";
@@ -51,7 +51,7 @@ contract RustLibrary is Test {
 
         address[] memory targets = vm.parseJsonAddressArray(json, ".targets");
         uint256[] memory offsets = vm.parseJsonUintArray(json, ".offsets");
-        bytes[] memory calldatas = vm.parseJsonBytesArray(json, ".calldatas");
+        bytes memory calldatas = vm.parseJsonBytes(json, ".calldatas");
         uint256[] memory msgValues = vm.parseJsonUintArray(json, ".msgValues");
 
         multicall.execute(targets, offsets, calldatas, msgValues);
@@ -68,9 +68,7 @@ contract RustLibrary is Test {
         string memory addr = vm.toString(address(simpleReturn));
 
         string memory calls = string.concat(
-            "[",
-            _callV("out/Helpers.sol/SimpleReturn.json", addr, "setUintValue", "[]", "500000000000000000"),
-            "]"
+            "[", _callV("out/Helpers.sol/SimpleReturn.json", addr, "setUintValue", "[]", "500000000000000000"), "]"
         );
 
         string[] memory inputs = new string[](9);
@@ -87,7 +85,7 @@ contract RustLibrary is Test {
         string memory json = string(vm.ffi(inputs));
         address[] memory targets = vm.parseJsonAddressArray(json, ".targets");
         uint256[] memory offsets = vm.parseJsonUintArray(json, ".offsets");
-        bytes[] memory calldatas = vm.parseJsonBytesArray(json, ".calldatas");
+        bytes memory calldatas = vm.parseJsonBytes(json, ".calldatas");
         uint256[] memory msgValues = vm.parseJsonUintArray(json, ".msgValues");
 
         assertEq(msgValues.length, 1, "one indexed value expected");
@@ -107,7 +105,17 @@ contract RustLibrary is Test {
         string memory value
     ) internal pure returns (string memory) {
         return string.concat(
-            '{"abiPath":"', abiPath, '","target":"', target, '","functionName":"', fn, '","args":', args, ',"value":"', value, '"}'
+            '{"abiPath":"',
+            abiPath,
+            '","target":"',
+            target,
+            '","functionName":"',
+            fn,
+            '","args":',
+            args,
+            ',"value":"',
+            value,
+            '"}'
         );
     }
 
@@ -117,7 +125,15 @@ contract RustLibrary is Test {
         returns (string memory)
     {
         return string.concat(
-            '{"abiPath":"', abiPath, '","target":"', target, '","functionName":"', fn, '","args":', args, ',"value":"0"}'
+            '{"abiPath":"',
+            abiPath,
+            '","target":"',
+            target,
+            '","functionName":"',
+            fn,
+            '","args":',
+            args,
+            ',"value":"0"}'
         );
     }
 }

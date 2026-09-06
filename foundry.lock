@@ -1,7 +1,4 @@
 {
-  "lib/solady": {
-    "rev": "dcdfab80f4e6cb9ac35c91610b2a2ec42689ec79"
-  },
   "lib/weiroll-huff": {
     "rev": "308049ebf0d4457353fa47c9766af853b3ebd990"
   }

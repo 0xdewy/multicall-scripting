@@ -45,7 +45,7 @@ const balance = builder.addCall(ERC20_ABI, TOKEN_ADDRESS, "balanceOf", [SENDER])
 // Step 2: transfer that exact balance — `balance` is wired at execution time
 builder.addCall(ERC20_ABI, TOKEN_ADDRESS, "transfer", [RECIPIENT, balance]);
 
-// build() produces the four arrays expected by MulticallScripter.execute()
+// build() produces the four inputs expected by MulticallScripter.execute()
 const { targets, offsets, calldatas, msgValues } = builder.build();
 
 console.log("Calldata ready to submit to MulticallScripter.execute():");

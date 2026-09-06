@@ -1,6 +1,6 @@
 {
   "name": "multicall-scripter",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "Build atomic multi-contract transactions with return value chaining",
   "type": "module",
   "main": "./index.js",
@@ -13,14 +13,13 @@
     "encoding.js",
     "offset-schema.json",
     "abi.js",
-    "cli.js",
-    "README.md"
+    "cli.js"
   ],
   "bin": {
     "tx-builder": "./cli.js"
   },
   "scripts": {
-    "build": "node cli.js",
+    "test": "bun test",
     "sync:schema": "node scripts/sync-schema.js",
     "prepack": "node scripts/sync-schema.js"
   },

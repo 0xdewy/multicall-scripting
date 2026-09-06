@@ -32,6 +32,10 @@ const ABI = [
       outputs: [{ name: "", type: "uint256" }] },
     { type: "function", name: "getConstant", stateMutability: "pure", inputs: [],
       outputs: [{ name: "", type: "uint64" }] },
+    { type: "function", name: "setStaticThenWord", stateMutability: "nonpayable",
+      inputs: [{ name: "s", type: "tuple", components: [{ name: "nA", type: "uint256" }, { name: "nB", type: "uint256" }] },
+               { name: "w", type: "uint256" }],
+      outputs: [] },
 ];
 
 const T = "0x0000000000000000000000000000000000000001";
@@ -94,6 +98,31 @@ scenarios.push(record("static_no_consumer", (() => {
     const b = new TransactionBuilder();
     b.addCall(ABI, T, "getConstant", []);
     b.addCall(ABI, T, "setNum", [5n]);
+    return b.build();
+})()));
+
+// 7. static tuple parameter before the spliced argument (head is 64 bytes, not 32)
+scenarios.push(record("static_tuple_then_ref", (() => {
+    const b = new TransactionBuilder();
+    const w = b.addCall(ABI, T, "getConstant", []);
+    b.addCall(ABI, T, "setStaticThenWord", [{ nA: 1n, nB: 2n }, w]);
+    return b.build();
+})()));
+
+// 8. consumer two calls after the producer (memTarget spans the intermediate call)
+scenarios.push(record("consumer_two_calls_later", (() => {
+    const b = new TransactionBuilder();
+    const w = b.addCall(ABI, T, "getConstant", []);
+    b.addCall(ABI, T, "setNum", [1n]);
+    b.addCall(ABI, T, "setNum", [w]);
+    return b.build();
+})()));
+
+scenarios.push(record("scalar_fanout", (() => {
+    const b = new TransactionBuilder();
+    const x = b.addCall(ABI, T, "add", [2n, 2n]);
+    b.addCall(ABI, T, "add", [x, x]);
+    b.addCall(ABI, T, "setNum", [x]);
     return b.build();
 })()));
 

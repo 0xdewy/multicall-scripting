@@ -1,58 +1,77 @@
 name: test
 
 on:
+  workflow_dispatch:
+    inputs:
+      fork_block:
+        description: Ethereum block for the release rehearsal (empty uses current)
+        required: false
+        type: string
   push:
-    branches: [main]
+    branches: [master]
   pull_request:
-    branches: [main]
-
-env:
-  FOUNDRY_PROFILE: ci
+    branches: [master]
 
 jobs:
   foundry:
-    name: Foundry tests + gas check
+    name: Foundry (incl. JS + Rust FFI suites) + gas check
     runs-on: ubuntu-latest
+    env:
+      # optional: enables the two mainnet-fork tests in test/CallBuilder.t.sol
+      ETH_RPC_URL: ${{ secrets.ETH_RPC_URL }}
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
         with:
           submodules: recursive
-
-      - name: Install Foundry
-        uses: foundry-rs/foundry-toolchain@v1
+      - uses: oven-sh/setup-bun@v2
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: foundry-rs/foundry-toolchain@v1
         with:
-          version: nightly
-
-      - name: Run Forge build
-        run: |
-          forge --version
-          forge build --sizes
-        id: build
-
-      - name: Run Forge tests
-        run: |
-          forge test -vvv
-        id: test
-
-      - name: Check gas regression
-        run: |
-          forge snapshot --check --tolerance 5 --no-match-contract JsLibrary
-        id: gas
+          version: v1.7.1
+      - run: cd js && bun install --frozen-lockfile
+      - run: cargo build --manifest-path rust/Cargo.toml -p multicall-scripter-cli
+      - run: forge build --sizes
+      - run: forge test -vvv
+      - run: forge snapshot --fuzz-seed 0x51c7 --check --tolerance 5 --no-match-contract 'JsLibrary|RustLibrary|Invariant' --no-match-test 'test_mint_weth_and_swap'
 
   bun:
-    name: JavaScript tests
+    name: JavaScript
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: cd js && bun install --frozen-lockfile
+      - run: cd js && bun test
 
-      - uses: oven-sh/setup-bun@v1
+  rust:
+    name: Rust
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          bun-version: latest
+          components: clippy
+      - run: cd rust && cargo test
+      - run: cd rust && cargo clippy --all-targets -- -D warnings
 
-      - name: Install dependencies
-        working-directory: js
-        run: bun install
-
-      - name: Run tests
-        working-directory: js
-        run: bun test
+  mainnet-fork:
+    name: Mainnet fork deployment and protocol rehearsal
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    env:
+      ETH_RPC_URL: ${{ secrets.ETH_RPC_URL }}
+      FORK_BLOCK: ${{ inputs.fork_block }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: oven-sh/setup-bun@v2
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: v1.7.1
+      - run: cd js && bun install --frozen-lockfile
+      - run: forge test --match-contract Invariant -vv
+        env:
+          FOUNDRY_INVARIANT_RUNS: 1024
+          FOUNDRY_INVARIANT_DEPTH: 512
+      - run: script/rehearse.sh

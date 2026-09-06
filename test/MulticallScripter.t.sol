@@ -1,14 +1,23 @@
-// SPDX-License-Identifier: GPL3
+// SPDX-License-Identifier: GPL-3.0
 pragma solidity ^0.8.28;
 
-import {Test, console} from "forge-std/Test.sol";
-import {CallBuilder, CallDecoder} from "src/CallBuilder.sol";
+import {Test} from "forge-std/Test.sol";
+import {CallBuilder} from "./CallBuilder.sol";
 import {MulticallScripter} from "src/MulticallScripter.sol";
 import {Math, SimpleReturn, DynamicReturn, Fuzzy, CalldataVerifier} from "./Helpers.sol";
 
-contract MulticallScriptTest is Test, CallBuilder, MulticallScripter {
+/// @dev A caller that cannot receive ETH, to exercise RefundFailed.
+contract NoReceive is CallBuilder {
+    function run(MulticallScripter m, address[] memory t, uint256[] memory o, bytes[] memory c, uint256[] memory v)
+        external
+        payable
+    {
+        m.execute{value: msg.value}(t, o, pack(c), v);
+    }
+}
+
+contract MulticallScriptTest is Test, CallBuilder {
     MulticallScripter multicall;
-    CallDecoder callDecoder;
 
     SimpleReturn simpleReturn;
     DynamicReturn dynamicReturn;
@@ -25,27 +34,28 @@ contract MulticallScriptTest is Test, CallBuilder, MulticallScripter {
     uint256[] resultLengths;
     uint256[] returnOffsets;
 
+    receive() external payable {}
+
     function setUp() public {
         multicall = new MulticallScripter();
         simpleReturn = new SimpleReturn();
         dynamicReturn = new DynamicReturn();
-        callDecoder = new CallDecoder();
         math = new Math();
         fuzzy = new Fuzzy();
     }
+
+    // ───────────────────────────── chaining ─────────────────────────────
 
     function test_simple_usage_raw() public {
         // x = math.add(2,2)
         calldatas.push(abi.encodeWithSelector(Math.add.selector, 2, 2));
         targets.push(address(math));
-        // store output of static call 36 bytes ahead in call chain as second param of following math.add(a,b)
-        // <this_call><add_fn_selector><first_param><second_param>
+        // store output 36 bytes into the next call: <selector><first_param><second_param>
         offsets.push(staticCall(0x24, 0x20));
 
         // y = math.add(2, x)
         calldatas.push(abi.encodeWithSelector(Math.add.selector, 2, 0));
         targets.push(address(math));
-        // next param offset is 4bytes + 32bytes (32==0x20)
         offsets.push(staticCall(0x4, 0x20));
 
         // math.setNum(y)
@@ -53,9 +63,7 @@ contract MulticallScriptTest is Test, CallBuilder, MulticallScripter {
         targets.push(address(math));
         offsets.push(stateChangingCall());
 
-        // execute calls
-        multicall.execute(targets, offsets, calldatas, values);
-        // 2 + 2 => 4 + 2 => 6
+        multicall.execute(targets, offsets, pack(calldatas), values);
         assertEq(math.number(), 6, "failed to add numbers");
     }
 
@@ -64,12 +72,10 @@ contract MulticallScriptTest is Test, CallBuilder, MulticallScripter {
         calldatas.push(abi.encodeWithSelector(SimpleReturn.setUint.selector, 0x0));
         targets.push(address(simpleReturn));
         targets.push(address(simpleReturn));
-        uint256 memTarget = 0x4;
-        offsets.push(staticCall(memTarget, 0x20));
+        offsets.push(staticCall(0x4, 0x20));
         offsets.push(stateChangingCall());
 
-        multicall.execute(targets, offsets, calldatas, values);
-
+        multicall.execute(targets, offsets, pack(calldatas), values);
         assertEq(simpleReturn.getUint(), 69);
     }
 
@@ -78,18 +84,17 @@ contract MulticallScriptTest is Test, CallBuilder, MulticallScripter {
         targets.push(address(simpleReturn));
         offsets.push(stateChangingCall());
 
-        multicall.execute(targets, offsets, calldatas, values);
-
+        multicall.execute(targets, offsets, pack(calldatas), values);
         assertEq(simpleReturn.getUint(), set);
     }
 
     function test_use_state_changing_call_return(uint256 val, uint256 val2) public {
-        // x = setUint(val)
+        // x = setUint(val)  (regular CALL with return-data copy)
         calldatas.push(abi.encodeWithSelector(SimpleReturn.setUint.selector, val));
         targets.push(address(simpleReturn));
         offsets.push(stateChangingCall(0x0, 0x4, 0x20));
 
-        // y = math.add(x, 2)
+        // y = math.add(x, val2)
         calldatas.push(abi.encodeWithSelector(Math.add.selector, 0x4, val2));
         targets.push(address(math));
         offsets.push(staticCall(0x4, 0x20));
@@ -99,23 +104,13 @@ contract MulticallScriptTest is Test, CallBuilder, MulticallScripter {
         targets.push(address(simpleReturn));
         offsets.push(stateChangingCall());
 
-        multicall.execute(targets, offsets, calldatas, values);
+        multicall.execute(targets, offsets, pack(calldatas), values);
 
         uint256 res;
         unchecked {
             res = val + val2;
         }
-
         assertEq(simpleReturn.getUint(), res);
-    }
-
-    function test_use_raw_data_simple() public {
-        calldatas.push(abi.encodeWithSelector(SimpleReturn.setUint.selector, 0x420));
-        targets.push(address(simpleReturn));
-        offsets.push(stateChangingCall());
-
-        multicall.execute(targets, offsets, calldatas, values);
-        assertEq(simpleReturn.getUint(), 0x420);
     }
 
     function test_multiple_raw_data_simple() public {
@@ -126,8 +121,228 @@ contract MulticallScriptTest is Test, CallBuilder, MulticallScripter {
         offsets.push(stateChangingCall());
         offsets.push(stateChangingCall());
 
-        multicall.execute(targets, offsets, calldatas, values);
+        multicall.execute(targets, offsets, pack(calldatas), values);
         assertEq(simpleReturn.getUint(), 0x69);
+    }
+
+    function test_use_tuple_data() public {
+        calldatas.push(abi.encodeWithSelector(DynamicReturn.getTupleConstant.selector));
+        targets.push(address(dynamicReturn));
+        offsets.push(staticCall(0x4, 0x60)); // three padded words straight into setTuple's args
+
+        calldatas.push(abi.encodeWithSelector(DynamicReturn.setTuple.selector, 0, 0, 0));
+        targets.push(address(dynamicReturn));
+        offsets.push(stateChangingCall());
+
+        multicall.execute(targets, offsets, pack(calldatas), values);
+
+        (uint256 a, uint256 b, uint256 c) = dynamicReturn.tuple();
+        assertEq(a, 1);
+        assertEq(b, 2);
+        assertEq(c, 3);
+    }
+
+    function test_use_tuple_packed_data() public {
+        calldatas.push(abi.encodeWithSelector(DynamicReturn.getTuplePackedConstant.selector));
+        targets.push(address(dynamicReturn));
+        offsets.push(staticCall(0x4, 0x60));
+
+        calldatas.push(abi.encodeWithSelector(DynamicReturn.setTuplePacked.selector, 0, 0, 0));
+        targets.push(address(dynamicReturn));
+        offsets.push(stateChangingCall());
+
+        multicall.execute(targets, offsets, pack(calldatas), values);
+
+        (uint128 a, uint64 b, uint64 c) = dynamicReturn.tuplePacked();
+        assertEq(a, 1);
+        assertEq(b, 2);
+        assertEq(c, 3);
+    }
+
+    // setTuple(max, max, max) -> getTupleConstant() = (1, 2, 3) -> setTuple(1, max, 3)
+    function test_partial_return_data() public {
+        calldatas.push(
+            abi.encodeWithSelector(
+                DynamicReturn.setTuple.selector, type(uint256).max, type(uint256).max, type(uint256).max
+            )
+        );
+        targets.push(address(dynamicReturn));
+        offsets.push(stateChangingCall());
+
+        calldatas.push(abi.encodeWithSelector(DynamicReturn.getTupleConstant.selector));
+        targets.push(address(dynamicReturn));
+        memTargets.push(0x04); // first param of the next call
+        memTargets.push(0x04 + 0x40); // third param
+        returnOffsets.push(0x0); // first returned word
+        returnOffsets.push(0x40); // third returned word
+        resultLengths.push(0x20);
+        resultLengths.push(0x20);
+        offsets.push(staticCallPartialReturn(memTargets, resultLengths, returnOffsets, 0x60));
+
+        calldatas.push(
+            abi.encodeWithSelector(DynamicReturn.setTuple.selector, uint256(0), type(uint256).max, uint256(0))
+        );
+        targets.push(address(dynamicReturn));
+        offsets.push(stateChangingCall());
+
+        multicall.execute(targets, offsets, pack(calldatas), values);
+
+        (uint256 a, uint256 b, uint256 c) = dynamicReturn.tuple();
+        assertEq(a, 1);
+        assertEq(b, type(uint256).max);
+        assertEq(c, 3);
+    }
+
+    // simpleReturn.setUint(99) → state-changing partial return (0xFB) → math.setNum(<99>)
+    function test_call_partial_return() public {
+        memTargets.push(0x04);
+        resultLengths.push(0x20);
+        returnOffsets.push(0x00);
+
+        calldatas.push(abi.encodeWithSelector(SimpleReturn.setUint.selector, 99));
+        targets.push(address(simpleReturn));
+        offsets.push(callPartialReturn(0, memTargets, resultLengths, returnOffsets, 0x20));
+
+        calldatas.push(abi.encodeWithSelector(Math.setNum.selector, uint256(0)));
+        targets.push(address(math));
+        offsets.push(stateChangingCall());
+
+        multicall.execute(targets, offsets, pack(calldatas), values);
+        assertEq(math.number(), 99);
+    }
+
+    // 0xFB with msg.value: setUintValue() stores msg.value and returns nothing; chain getUint() instead
+    function test_call_partial_return_with_value() public {
+        calldatas.push(abi.encodeWithSelector(SimpleReturn.setUintValue.selector));
+        targets.push(address(simpleReturn));
+        offsets.push(callPartialReturn(1, memTargets, resultLengths, returnOffsets, 0)); // 0 vars, carries value
+        values.push(0x420);
+
+        calldatas.push(abi.encodeWithSelector(SimpleReturn.getUint.selector));
+        targets.push(address(simpleReturn));
+        offsets.push(staticCall(0x4, 0x20));
+
+        calldatas.push(abi.encodeWithSelector(Math.setNum.selector, uint256(0)));
+        targets.push(address(math));
+        offsets.push(stateChangingCall());
+
+        multicall.execute{value: 0x420}(targets, offsets, pack(calldatas), values);
+        assertEq(math.number(), 0x420);
+        assertEq(address(simpleReturn).balance, 0x420);
+    }
+
+    function test_partial_return_max_size() public {
+        memTargets.push(0x04);
+        resultLengths.push(0x20);
+        returnOffsets.push(0x00);
+        // returnDataSize = 0xFFFF is accepted by the encoder; the callee only returns 32 bytes so
+        // execute() must reject it rather than splice zeros
+        offsets.push(staticCallPartialReturn(memTargets, resultLengths, returnOffsets, type(uint16).max));
+        calldatas.push(abi.encodeWithSelector(SimpleReturn.getConstant.selector));
+        targets.push(address(simpleReturn));
+
+        calldatas.push(abi.encodeWithSelector(SimpleReturn.setUint.selector, 0));
+        targets.push(address(simpleReturn));
+        offsets.push(stateChangingCall());
+
+        vm.expectRevert(MulticallScripter.InsufficientReturnData.selector);
+        multicall.execute(targets, offsets, pack(calldatas), values);
+    }
+
+    // changeState(startData) -> getState() spliced into changeState(...) -> setBool(<false>)
+    function test_fuzz_bytes(bytes calldata startData) public {
+        calldatas.push(abi.encodeWithSelector(Fuzzy.changeState.selector, startData));
+        targets.push(address(fuzzy));
+        offsets.push(stateChangingCall());
+
+        calldatas.push(abi.encodeWithSelector(Fuzzy.getState.selector));
+        targets.push(address(fuzzy));
+        offsets.push(staticCall(0x04, startData.length));
+
+        calldatas.push(abi.encodeWithSelector(Fuzzy.changeState.selector, startData));
+        targets.push(address(fuzzy));
+        offsets.push(stateChangingCall(0x0, 0x04, 0x20));
+
+        calldatas.push(abi.encodeWithSelector(Fuzzy.setBool.selector, 0x0));
+        targets.push(address(fuzzy));
+        offsets.push(stateChangingCall());
+
+        multicall.execute(targets, offsets, pack(calldatas), values);
+
+        assertEq(fuzzy.getState(), startData);
+        assertEq(fuzzy.booool(), false);
+    }
+
+    function test_fuzz_bytes_alt(bytes calldata startData) public {
+        calldatas.push(abi.encodeWithSelector(Fuzzy.changeState.selector, startData));
+        targets.push(address(fuzzy));
+        offsets.push(stateChangingCall());
+
+        bytes memory newData = abi.encodeWithSignature("randomsignature(uint)", 0x69);
+        while (newData.length == startData.length) {
+            newData = abi.encode(newData, startData);
+        }
+
+        calldatas.push(abi.encodeWithSelector(Fuzzy.changeState.selector, newData));
+        targets.push(address(fuzzy));
+        offsets.push(stateChangingCall(0x0, 0x04, 0x20));
+
+        calldatas.push(abi.encodeWithSelector(Fuzzy.setBool.selector, 0x0));
+        targets.push(address(fuzzy));
+        offsets.push(stateChangingCall());
+
+        multicall.execute(targets, offsets, pack(calldatas), values);
+
+        assertEq(fuzzy.getState(), newData);
+        assertEq(fuzzy.booool(), true);
+    }
+
+    function test_empty_batch() public {
+        multicall.execute(targets, offsets, pack(calldatas), values);
+    }
+
+    function test_call_with_unpadded_calldata() public {
+        CalldataVerifier verifier = new CalldataVerifier();
+        calldatas.push(abi.encodeWithSelector(CalldataVerifier.noArgs.selector));
+        targets.push(address(verifier));
+        offsets.push(stateChangingCall());
+        multicall.execute(targets, offsets, pack(calldatas), values);
+        assertEq(verifier.lastCalldataLength(), 4, "should be 4 bytes (selector only)");
+    }
+
+    function test_staticcall_with_unpadded_calldata() public {
+        CalldataVerifier verifier = new CalldataVerifier();
+        calldatas.push(abi.encodeWithSelector(CalldataVerifier.noArgsView.selector));
+        targets.push(address(verifier));
+        offsets.push(staticCall(0x04, 0x20));
+        calldatas.push(abi.encodeWithSelector(SimpleReturn.setUint.selector, 0));
+        targets.push(address(simpleReturn));
+        offsets.push(stateChangingCall());
+        multicall.execute(targets, offsets, pack(calldatas), values);
+        assertEq(simpleReturn.getUint(), 4);
+    }
+
+    function test_execution_follows_relocated_abi_tail() public {
+        targets.push(address(simpleReturn));
+        offsets.push(stateChangingCall());
+        calldatas.push(abi.encodeCall(SimpleReturn.setUint, (2)));
+        bytes memory script = pack(calldatas);
+        bytes memory original = abi.encodeCall(multicall.execute, (targets, offsets, script, values));
+        bytes memory data = bytes.concat(original, abi.encode(script.length), script);
+        assembly ("memory-safe") { mstore(add(data, 100), sub(mload(original), 4)) }
+        (bool ok,) = address(multicall).call(data);
+        assertTrue(ok);
+        assertEq(simpleReturn.getUint(), 2);
+    }
+
+    function test_raw_data_simple_value() public {
+        calldatas.push(abi.encodeWithSelector(SimpleReturn.setUintValue.selector));
+        targets.push(address(simpleReturn));
+        offsets.push(stateChangingCall(0x1));
+        values.push(0x420);
+
+        multicall.execute{value: 0x420}(targets, offsets, pack(calldatas), values);
+        assertEq(simpleReturn.getUint(), 0x420);
     }
 
     function test_raw_data_multiple_values() public {
@@ -141,285 +356,178 @@ contract MulticallScriptTest is Test, CallBuilder, MulticallScripter {
         offsets.push(stateChangingCall(0x2));
         values.push(69e18);
 
-        // send exact amount
-        multicall.execute{value: 69e18 + 1}(targets, offsets, calldatas, values);
+        multicall.execute{value: 69e18 + 1}(targets, offsets, pack(calldatas), values);
         assertEq(simpleReturn.getUint(), 69e18);
         assertEq(address(simpleReturn).balance, 69e18 + 1);
+    }
 
-        // Run calls again but finish with first value
+    function test_unspent_value_is_refunded() public {
         calldatas.push(abi.encodeWithSelector(SimpleReturn.setUintValue.selector));
         targets.push(address(simpleReturn));
         offsets.push(stateChangingCall(0x1));
+        values.push(1 ether);
 
-        // Send too much and make sure the rest is returned
-        multicall.execute{value: 100e18}(targets, offsets, calldatas, values);
+        uint256 before = address(this).balance;
+        multicall.execute{value: 5 ether}(targets, offsets, pack(calldatas), values);
 
-        assertEq(simpleReturn.getUint(), 1);
-        assertEq(address(simpleReturn).balance, (69e18 + 1) * 2 + 1);
+        assertEq(address(simpleReturn).balance, 1 ether);
+        assertEq(address(this).balance, before - 1 ether, "excess must come back to the caller");
+        assertEq(address(multicall).balance, 0, "executor must hold nothing afterwards");
     }
 
-    function test_raw_data_simple_value() public {
+    function test_refund_to_non_payable_caller_reverts() public {
+        NoReceive caller = new NoReceive();
         calldatas.push(abi.encodeWithSelector(SimpleReturn.setUintValue.selector));
         targets.push(address(simpleReturn));
         offsets.push(stateChangingCall(0x1));
-        values.push(0x420);
+        values.push(1);
 
-        multicall.execute{value: 0x420}(targets, offsets, calldatas, values);
-
-        assertEq(simpleReturn.getUint(), 0x420);
+        vm.expectRevert(MulticallScripter.RefundFailed.selector);
+        caller.run{value: 2}(multicall, targets, offsets, calldatas, values);
     }
 
-    function test_use_tuple_packed_data() public {
-        // getTuplePackedConstant
-        calldatas.push(abi.encodeWithSelector(DynamicReturn.getTuplePackedConstant.selector));
-        targets.push(address(dynamicReturn));
-        uint256 memTarget = 0x4; // add(0x20, add(4, encodedCalldataLen))
-        offsets.push(staticCall(memTarget, 0x60)); // tuple is returned with each element padded to 32 bytes
-
-        // setTuplePacked
-        calldatas.push(abi.encodeWithSelector(DynamicReturn.setTuplePacked.selector, 0, 0, 0));
-        targets.push(address(dynamicReturn));
-        offsets.push(stateChangingCall());
-
-        multicall.execute(targets, offsets, calldatas, values);
-
-        (uint128 a, uint64 b, uint64 c) = dynamicReturn.tuplePacked();
-        assertEq(a, uint128(1));
-        assertEq(b, uint64(2));
-        assertEq(c, uint64(3));
-    }
-
-    function test_set_tuple_raw() public {
-        // set tuple to all max uints
-        calldatas.push(
-            abi.encodeWithSelector(
-                DynamicReturn.setTuple.selector, type(uint256).max, type(uint256).max, type(uint256).max
-            )
-        );
-        targets.push(address(dynamicReturn));
-        offsets.push(stateChangingCall());
-
-        multicall.execute(targets, offsets, calldatas, values);
-
-        (uint256 a, uint256 b, uint256 c) = dynamicReturn.tuple();
-        assertEq(a, type(uint256).max);
-        assertEq(b, type(uint256).max);
-        assertEq(c, type(uint256).max);
-    }
-
-    function test_use_tuple_data() public {
-        // getTupleConstant
-        calldatas.push(abi.encodeWithSelector(DynamicReturn.getTupleConstant.selector));
-        targets.push(address(dynamicReturn));
-        uint256 memTarget = 0x4; // add(0x20, add(4, encodedCalldataLen))
-        offsets.push(staticCall(memTarget, 0x60)); // tuple is returned with each element padded to 32 bytes
-
-        // setTuple
-        calldatas.push(abi.encodeWithSelector(DynamicReturn.setTuple.selector, 0, 0, 0));
-        targets.push(address(dynamicReturn));
-        offsets.push(stateChangingCall());
-
-        multicall.execute(targets, offsets, calldatas, values);
-
-        (uint256 a, uint256 b, uint256 c) = dynamicReturn.tuple();
-        assertEq(a, uint256(1));
-        assertEq(b, uint256(2));
-        assertEq(c, uint256(3));
-    }
-
-    // set tuple(max, max, max) -> get_tuple_constants -> (1, 2, 3) -> setTuple(1, max, 3)
-    function test_partial_return_data() public {
-        // set_tuple(max, max, max)
-        bytes memory set_tuple_first_calldata = abi.encodeWithSelector(
-            DynamicReturn.setTuple.selector, type(uint256).max, type(uint256).max, type(uint256).max
-        );
-        // get tuple constants() -> (1, 2, 3)
-        bytes memory partial_return_static_call = abi.encodeWithSelector(DynamicReturn.getTupleConstant.selector);
-        // set_tuple(1, max, 3)
-        bytes memory set_tuple_second_calldata =
-            abi.encodeWithSelector(DynamicReturn.setTuple.selector, uint256(0), type(uint256).max, uint256(0));
-
-        // ===============set_tuple=======================
-        calldatas.push(set_tuple_first_calldata);
-        targets.push(address(dynamicReturn));
-        offsets.push(stateChangingCall());
-
-        // ===============get_tuple_constants=======================
-        calldatas.push(partial_return_static_call);
-        targets.push(address(dynamicReturn));
-
-        // 3 parameters from the last parameter
-        //  <4byte_selector><tuple_data_offset><tuple_length><item0><item1><item2>
-        uint256 next_call_data_start = set_tuple_second_calldata.length - 0x60;
-        assertEq(next_call_data_start, 0x04);
-
-        // where in next call to use
-        memTargets.push(0x04); // pos 1
-        memTargets.push(0x04 + 0x40); // pos 3
-        // where in current call to fetch data
-        returnOffsets.push(0x0); // first item
-        returnOffsets.push(0x40); // third item
-        resultLengths.push(0x20); // uint256
-        resultLengths.push(0x20); // uint256
-        offsets.push(staticCallPartialReturn(memTargets, resultLengths, returnOffsets, 0x60));
-
-        // ==================set_tuple=================================
-        calldatas.push(set_tuple_second_calldata);
-        targets.push(address(dynamicReturn));
-        offsets.push(stateChangingCall(0x0));
-
-        // ===================execute=================================
-        multicall.execute(targets, offsets, calldatas, values);
-
-        (uint256 a, uint256 b, uint256 c) = dynamicReturn.tuple();
-        assertEq(a, 1);
-        assertEq(b, type(uint256).max);
-        assertEq(c, 3);
-    }
-
-    // changeState(startData) -> returns true
-    // x = changeState(startData) -> returns false
-    // setBool(x)
-    function test_fuzz_bytes(bytes calldata startData) public {
-        calldatas.push(abi.encodeWithSelector(Fuzzy.changeState.selector, startData));
-        targets.push(address(fuzzy));
-        offsets.push(stateChangingCall()); // tuple is returned with each element padded to 32 bytes
-
-        calldatas.push(abi.encodeWithSelector(Fuzzy.getState.selector));
-        targets.push(address(fuzzy));
-        offsets.push(staticCall(0x04, startData.length)); // tuple is returned with each element padded to 32 bytes
-
-        calldatas.push(abi.encodeWithSelector(Fuzzy.changeState.selector, startData));
-        targets.push(address(fuzzy));
-        offsets.push(stateChangingCall(0x0, 0x04, 0x20)); // tuple is returned with each element padded to 32 bytes
-
-        calldatas.push(abi.encodeWithSelector(Fuzzy.setBool.selector, 0x0));
-        targets.push(address(fuzzy));
-        offsets.push(stateChangingCall());
-
-        multicall.execute(targets, offsets, calldatas, values);
-
-        assertEq(fuzzy.getState(), startData);
-        assertEq(fuzzy.booool(), false);
-    }
-
-    function test_fuzz_bytes_alt(bytes calldata startData) public {
-        calldatas.push(abi.encodeWithSelector(Fuzzy.changeState.selector, startData));
-        targets.push(address(fuzzy));
-        offsets.push(stateChangingCall()); // tuple is returned with each element padded to 32 bytes
-
-        bytes memory newData = abi.encodeWithSignature("randomsignature(uint)", 0x69);
-
-        while (newData.length == startData.length) {
-            newData = abi.encode(newData, startData);
-        }
-
-        calldatas.push(abi.encodeWithSelector(Fuzzy.changeState.selector, newData));
-        targets.push(address(fuzzy));
-        offsets.push(stateChangingCall(0x0, 0x04, 0x20)); // tuple is returned with each element padded to 32 bytes
-
-        calldatas.push(abi.encodeWithSelector(Fuzzy.setBool.selector, 0x0));
-        targets.push(address(fuzzy));
-        offsets.push(stateChangingCall());
-
-        multicall.execute(targets, offsets, calldatas, values);
-
-        assertEq(fuzzy.getState(), newData);
-        assertEq(fuzzy.booool(), true);
-    }
-
-    function test_empty_batch() public {
-        multicall.execute(targets, offsets, calldatas, values);
-        // just verifying no revert on empty arrays
-    }
-
-    function test_single_call_batch() public {
-        calldatas.push(abi.encodeWithSelector(SimpleReturn.setUint.selector, 42));
+    function test_value_index_out_of_range() public {
+        calldatas.push(abi.encodeWithSelector(SimpleReturn.setUintValue.selector));
         targets.push(address(simpleReturn));
-        offsets.push(stateChangingCall());
+        offsets.push(stateChangingCall(0x1)); // values is empty
 
-        multicall.execute(targets, offsets, calldatas, values);
+        vm.expectRevert(MulticallScripter.InvalidValueIndex.selector);
+        multicall.execute{value: 1}(targets, offsets, pack(calldatas), values);
+    }
 
-        assertEq(simpleReturn.getUint(), 42);
+    function test_direct_eth_rejected() public {
+        (bool ok,) = address(multicall).call{value: 1}("");
+        assertFalse(ok);
+    }
+
+    // ───────────────────────────── validation ─────────────────────────────
+
+    function test_length_mismatch() public {
+        targets.push(address(math));
+        vm.expectRevert(MulticallScripter.LengthMismatch.selector);
+        multicall.execute(targets, offsets, pack(calldatas), values);
     }
 
     function test_invalid_calltype_reverts() public {
         calldatas.push(abi.encodeWithSelector(SimpleReturn.setUint.selector, 42));
         targets.push(address(simpleReturn));
-        // offset with calltype 0x00 (no known flag matches)
         offsets.push(0x00);
-        values.push(0);
 
-        // The raw assembly revert mstores 0x8f61746f as a right-aligned 32-byte value
-        bytes memory expected = hex"000000000000000000000000000000000000000000000000000000008f61746f";
-        vm.expectRevert(expected);
-        multicall.execute(targets, offsets, calldatas, values);
+        vm.expectRevert(abi.encodeWithSelector(MulticallScripter.InvalidOffset.selector, 0));
+        multicall.execute(targets, offsets, pack(calldatas), values);
     }
 
-    function test_partial_return_max_size() public {
-        // Test that staticCallPartialReturn accepts max uint16 value
-        memTargets.push(0x04);
-        resultLengths.push(0x20);
-        returnOffsets.push(0x00);
-        offsets.push(staticCallPartialReturn(memTargets, resultLengths, returnOffsets, type(uint16).max));
-
+    function test_partial_too_many_vars_reverts() public {
+        uint256 bad = (STATIC_CALL_PARTIAL_RETURN_FLAG << VALUE_OFFSET) | (0x20 << 8) | 4; // num_vars = 4
         calldatas.push(abi.encodeWithSelector(SimpleReturn.getConstant.selector));
         targets.push(address(simpleReturn));
-        values.push(0);
+        offsets.push(bad);
 
-        calldatas.push(abi.encodeWithSelector(SimpleReturn.setUint.selector, 0));
-        targets.push(address(simpleReturn));
-        offsets.push(stateChangingCall());
-        values.push(0);
-
-        multicall.execute(targets, offsets, calldatas, values);
-
-        assertEq(simpleReturn.getUint(), 69);
+        vm.expectRevert(abi.encodeWithSelector(MulticallScripter.InvalidOffset.selector, bad));
+        multicall.execute(targets, offsets, pack(calldatas), values);
     }
 
-    // simpleReturn.setUint(99) → state-changing, returns 99 via 0xFB path → math.setNum(<99>)
-    function test_call_partial_return() public {
-        // setUint(99): CALL_PARTIAL_RETURN_FLAG; memTarget=0x4 (first param of next call), returnDataSize=0x20
-        memTargets.push(0x04);
+    // A regular call whose return-data write runs past the calldata region must revert.
+    function test_regular_return_out_of_bounds() public {
+        calldatas.push(abi.encodeWithSelector(SimpleReturn.getConstant.selector));
+        targets.push(address(simpleReturn));
+        offsets.push(staticCall(0x10000, 0x20));
+
+        calldatas.push(abi.encodeWithSelector(SimpleReturn.setUint.selector, 0x0));
+        targets.push(address(simpleReturn));
+        offsets.push(stateChangingCall());
+
+        vm.expectRevert(MulticallScripter.InvalidMemoryTarget.selector);
+        multicall.execute(targets, offsets, pack(calldatas), values);
+    }
+
+    // The last call has no successor, so any return-data write is out of bounds.
+    function test_last_call_cannot_write_return_data() public {
+        calldatas.push(abi.encodeWithSelector(SimpleReturn.getConstant.selector));
+        targets.push(address(simpleReturn));
+        offsets.push(staticCall(0x0, 0x20));
+
+        vm.expectRevert(MulticallScripter.InvalidMemoryTarget.selector);
+        multicall.execute(targets, offsets, pack(calldatas), values);
+    }
+
+    function test_partial_return_out_of_bounds() public {
+        memTargets.push(0x10000);
         resultLengths.push(0x20);
         returnOffsets.push(0x00);
-        uint256 cpOffset = callPartialReturn(0, memTargets, resultLengths, returnOffsets, 0x20);
-
-        calldatas.push(abi.encodeWithSelector(SimpleReturn.setUint.selector, 99));
+        calldatas.push(abi.encodeWithSelector(SimpleReturn.getConstant.selector));
         targets.push(address(simpleReturn));
-        offsets.push(cpOffset);
+        offsets.push(staticCallPartialReturn(memTargets, resultLengths, returnOffsets, 0x20));
 
-        // math.setNum(0) — placeholder; will be overwritten with 99 via mcopy
-        calldatas.push(abi.encodeWithSelector(Math.setNum.selector, uint256(0)));
-        targets.push(address(math));
+        calldatas.push(abi.encodeWithSelector(SimpleReturn.setUint.selector, 0x0));
+        targets.push(address(simpleReturn));
         offsets.push(stateChangingCall());
 
-        multicall.execute(targets, offsets, calldatas, values);
-
-        assertEq(math.number(), 99);
+        vm.expectRevert(MulticallScripter.InvalidMemoryTarget.selector);
+        multicall.execute(targets, offsets, pack(calldatas), values);
     }
 
-    // Test that returnLength > uint16 max is rejected by CallBuilder.staticCallPartialReturn
+    // Calling an address with no code succeeds with empty return data; the executor must not
+    // silently leave the placeholder argument in place.
+    function test_short_return_data_reverts_regular() public {
+        calldatas.push(abi.encodeWithSelector(SimpleReturn.getConstant.selector));
+        targets.push(address(0xBEEF));
+        offsets.push(staticCall(0x4, 0x20));
+
+        calldatas.push(abi.encodeWithSelector(SimpleReturn.setUint.selector, 0x0));
+        targets.push(address(simpleReturn));
+        offsets.push(stateChangingCall());
+
+        vm.expectRevert(MulticallScripter.InsufficientReturnData.selector);
+        multicall.execute(targets, offsets, pack(calldatas), values);
+    }
+
+    function test_short_return_data_reverts_partial_slice() public {
+        memTargets.push(0x04);
+        resultLengths.push(0x20);
+        returnOffsets.push(0x10); // slice [0x10, 0x30) exceeds the 0x20 bytes captured
+        calldatas.push(abi.encodeWithSelector(SimpleReturn.getConstant.selector));
+        targets.push(address(simpleReturn));
+        offsets.push(staticCallPartialReturn(memTargets, resultLengths, returnOffsets, 0x20));
+
+        calldatas.push(abi.encodeWithSelector(SimpleReturn.setUint.selector, 0x0));
+        targets.push(address(simpleReturn));
+        offsets.push(stateChangingCall());
+
+        vm.expectRevert(MulticallScripter.InsufficientReturnData.selector);
+        multicall.execute(targets, offsets, pack(calldatas), values);
+    }
+
+    function test_callee_revert_bubbles() public {
+        calldatas.push(abi.encodeWithSelector(Fuzzy.setBool.selector, true));
+        targets.push(address(fuzzy));
+        offsets.push(stateChangingCall());
+
+        calldatas.push(abi.encodeWithSignature("doesNotExist()"));
+        targets.push(address(fuzzy));
+        offsets.push(stateChangingCall());
+
+        vm.expectRevert(bytes(""));
+        multicall.execute(targets, offsets, pack(calldatas), values);
+        assertEq(fuzzy.booool(), false, "batch must be atomic");
+    }
+
+    // ───────────────────────────── encoder limits ─────────────────────────────
+
     function test_partial_return_overflow() public {
         PartialReturnTestWrapper wrapper = new PartialReturnTestWrapper();
         vm.expectRevert(bytes("returnLength is too large"));
         wrapper.externalStaticCallPartialReturn(
-            _toUintArray(1, 0x04),
-            _toUintArray(1, 0x20),
-            _toUintArray(1, 0x00),
-            uint256(type(uint16).max) + 1
+            _toUintArray(1, 0x04), _toUintArray(1, 0x20), _toUintArray(1, 0x00), uint256(type(uint16).max) + 1
         );
     }
 
     function test_partial_return_boundary() public {
         PartialReturnTestWrapper wrapper = new PartialReturnTestWrapper();
         uint256 offset = wrapper.externalStaticCallPartialReturn(
-            _toUintArray(1, 0x04),
-            _toUintArray(1, 0x20),
-            _toUintArray(1, 0x00),
-            uint256(type(uint16).max)
+            _toUintArray(1, 0x04), _toUintArray(1, 0x20), _toUintArray(1, 0x00), uint256(type(uint16).max)
         );
-        assertTrue(offset != 0, "should produce a valid offset");
+        assertTrue(offset != 0);
     }
 
     function _toUintArray(uint256 len, uint256 value) private pure returns (uint256[] memory arr) {
@@ -428,104 +536,9 @@ contract MulticallScriptTest is Test, CallBuilder, MulticallScripter {
             arr[i] = value;
         }
     }
-
-    // Fuzz: staticCallPartialReturn with randomized valid inputs
-    function test_fuzz_partialReturn(
-        uint40 memTarget1,
-        uint40 memTarget2,
-        uint40 memTarget3,
-        uint16 resultLength1,
-        uint16 resultLength2,
-        uint16 resultLength3,
-        uint16 returnOffset1,
-        uint16 returnOffset2,
-        uint16 returnOffset3,
-        uint16 returnDataSize
-    ) public {
-        // Bound inputs to be valid (returnOffsets + resultLengths ≤ returnDataSize)
-        vm.assume(uint256(returnOffset1) + uint256(resultLength1) <= uint256(returnDataSize));
-        vm.assume(uint256(returnOffset2) + uint256(resultLength2) <= uint256(returnDataSize));
-        vm.assume(uint256(returnOffset3) + uint256(resultLength3) <= uint256(returnDataSize));
-
-        // All resultLengths must be > 0 (otherwise the variable is empty for this slot;
-        // zero-length slots at the end are fine since memTargets.length is dynamic)
-        // For the fuzz: we use all 3 slots regardless
-        memTargets = new uint256[](3);
-        resultLengths = new uint256[](3);
-        returnOffsets = new uint256[](3);
-        memTargets[0] = memTarget1;
-        memTargets[1] = memTarget2;
-        memTargets[2] = memTarget3;
-        resultLengths[0] = resultLength1;
-        resultLengths[1] = resultLength2;
-        resultLengths[2] = resultLength3;
-        returnOffsets[0] = returnOffset1;
-        returnOffsets[1] = returnOffset2;
-        returnOffsets[2] = returnOffset3;
-
-        // Should not revert for any valid input combination
-        uint256 offset = staticCallPartialReturn(memTargets, resultLengths, returnOffsets, returnDataSize);
-        assertTrue(offset != 0, "should produce non-zero offset");
-
-        // Decode and verify via the JS layer's schema (encode+decode roundtrip covered in js/test/)
-    }
-
-    function test_call_with_unpadded_calldata() public {
-        CalldataVerifier calldataVerifier = new CalldataVerifier();
-        calldatas.push(abi.encodeWithSelector(CalldataVerifier.noArgs.selector));
-        targets.push(address(calldataVerifier));
-        offsets.push(stateChangingCall());
-        multicall.execute(targets, offsets, calldatas, values);
-        assertEq(calldataVerifier.lastCalldataLength(), 4, "should be 4 bytes (selector only)");
-    }
-
-    function test_staticcall_with_unpadded_calldata() public {
-        CalldataVerifier calldataVerifier = new CalldataVerifier();
-        calldatas.push(abi.encodeWithSelector(CalldataVerifier.noArgsView.selector));
-        targets.push(address(calldataVerifier));
-        offsets.push(staticCall(0x04, 0x20));
-        // Use the return value (msg.data.length) as parameter to setUint
-        calldatas.push(abi.encodeWithSelector(SimpleReturn.setUint.selector, 0));
-        targets.push(address(simpleReturn));
-        offsets.push(stateChangingCall());
-        multicall.execute(targets, offsets, calldatas, values);
-        assertEq(simpleReturn.getUint(), 4);
-    }
-
-    // A regular static call whose return-data write (memTarget + resultLength) runs past the
-    // pre-allocated calldata region must revert instead of silently corrupting memory (AUDIT F1).
-    function test_regular_return_out_of_bounds() public {
-        // producing call returns 0x20 bytes; memTarget is far beyond the (~160 byte) calldata region
-        calldatas.push(abi.encodeWithSelector(SimpleReturn.getConstant.selector));
-        targets.push(address(simpleReturn));
-        offsets.push(staticCall(0x10000, 0x20));
-
-        // consuming call (gives the batch a later region; the write still lands out of bounds)
-        calldatas.push(abi.encodeWithSelector(SimpleReturn.setUint.selector, 0x0));
-        targets.push(address(simpleReturn));
-        offsets.push(stateChangingCall());
-
-        vm.expectRevert(MulticallScripter.InvalidMemoryTarget.selector);
-        multicall.execute(targets, offsets, calldatas, values);
-    }
-
-    // Companion: an in-bounds chain (write into the next call's region) still succeeds.
-    function test_regular_return_in_bounds_ok() public {
-        calldatas.push(abi.encodeWithSelector(SimpleReturn.getConstant.selector));
-        targets.push(address(simpleReturn));
-        offsets.push(staticCall(0x4, 0x20));
-
-        calldatas.push(abi.encodeWithSelector(SimpleReturn.setUint.selector, 0x0));
-        targets.push(address(simpleReturn));
-        offsets.push(stateChangingCall());
-
-        multicall.execute(targets, offsets, calldatas, values);
-        assertEq(simpleReturn.getUint(), 69);
-    }
 }
 
-// Minimal external wrapper so vm.expectRevert can be used on the internal
-// staticCallPartialReturn function.
+// Minimal external wrapper so vm.expectRevert can be used on the internal encoder.
 contract PartialReturnTestWrapper is CallBuilder {
     function externalStaticCallPartialReturn(
         uint256[] memory memTargets,
@@ -536,4 +549,3 @@ contract PartialReturnTestWrapper is CallBuilder {
         return staticCallPartialReturn(memTargets, resultLengths, returnOffsets, returnLength);
     }
 }
-

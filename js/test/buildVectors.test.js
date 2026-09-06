@@ -21,11 +21,14 @@ describe("build vectors", () => {
         const names = committed.map((s) => s.name);
         for (const expected of [
             "scalar_chain",
+            "scalar_fanout",
             "multi_return",
             "msg_value_no_return",
             "msg_value_with_return",
             "dynamic_string",
             "static_no_consumer",
+            "static_tuple_then_ref",
+            "consumer_two_calls_later",
         ]) {
             expect(names).toContain(expected);
         }

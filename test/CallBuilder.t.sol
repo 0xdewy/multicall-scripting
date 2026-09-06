@@ -2,13 +2,13 @@
 pragma solidity ^0.8.28;
 
 import {Test, console2} from "forge-std/Test.sol";
-import {CallBuilder, Scripter, VarLib} from "src/CallBuilder.sol";
+import {CallBuilder, Scripter, VarLib} from "./CallBuilder.sol";
 import {MulticallScripter} from "src/MulticallScripter.sol";
 import {IERC20} from "forge-std/interfaces/IERC20.sol";
 import {Math, DynamicReturn, SimpleReturn} from "./Helpers.sol";
 import {UniV2, IUniswapV2Pair, IMulticall3} from "./Ecosystem.sol";
 
-contract MulticallScriptTest is Test, CallBuilder, MulticallScripter, UniV2 {
+contract CallBuilderTest is Test, CallBuilder, UniV2 {
     using VarLib for VarLib.Var;
     using VarLib for uint256;
 
@@ -24,8 +24,19 @@ contract MulticallScriptTest is Test, CallBuilder, MulticallScripter, UniV2 {
     uint256 constant ETH_AMT = 1e17;
     uint256 constant ETH_START_BALANCE = 100 ether;
 
+    bool forked;
+
+    receive() external payable {}
+
+    // Fork-dependent tests run only when ETH_RPC_URL is set (they are skipped otherwise).
     function setUp() public {
-        vm.createSelectFork("https://eth.drpc.org", 18_100_000);
+        string memory rpc = vm.envOr("ETH_RPC_URL", string(""));
+        if (bytes(rpc).length > 0) {
+            uint256 forkBlock = vm.envOr("FORK_BLOCK", uint256(0));
+            if (forkBlock == 0) vm.createSelectFork(rpc);
+            else vm.createSelectFork(rpc, forkBlock);
+            forked = true;
+        }
         multicall = new MulticallScripter();
         scripter = new Scripter();
         math = new Math();
@@ -49,7 +60,7 @@ contract MulticallScriptTest is Test, CallBuilder, MulticallScripter, UniV2 {
         (address[] memory targets, uint256[] memory offsets, bytes[] memory calldatas, uint256[] memory values) =
             scripter.build();
 
-        multicall.execute(targets, offsets, calldatas, values);
+        multicall.execute(targets, offsets, pack(calldatas), values);
 
         assertEq(math.number(), 6);
     }
@@ -66,7 +77,7 @@ contract MulticallScriptTest is Test, CallBuilder, MulticallScripter, UniV2 {
 
         (address[] memory targets, uint256[] memory offsets, bytes[] memory calldatas, uint256[] memory values) =
             scripter.build();
-        multicall.execute(targets, offsets, calldatas, values);
+        multicall.execute(targets, offsets, pack(calldatas), values);
 
         assertEq(math.number(), 2);
     }
@@ -95,12 +106,12 @@ contract MulticallScriptTest is Test, CallBuilder, MulticallScripter, UniV2 {
             0
         );
 
-        scripter.useCallOutput(get_call.first(), set_call.first());   // element 1 -> param 1
-        scripter.useCallOutput(get_call.third(), set_call.third());   // element 3 -> param 3
+        scripter.useCallOutput(get_call.first(), set_call.first()); // element 1 -> param 1
+        scripter.useCallOutput(get_call.third(), set_call.third()); // element 3 -> param 3
 
         (address[] memory targets, uint256[] memory offsets, bytes[] memory calldatas, uint256[] memory values) =
             scripter.build();
-        multicall.execute(targets, offsets, calldatas, values);
+        multicall.execute(targets, offsets, pack(calldatas), values);
 
         (uint256 a, uint256 b, uint256 c) = dynamicReturn.tuple();
         assertEq(a, 1);
@@ -110,15 +121,14 @@ contract MulticallScriptTest is Test, CallBuilder, MulticallScripter, UniV2 {
 
     // simpleReturn.setUint(42) → returns 42 (state-changing, 0xFB path) → math.setNum(<42>)
     function test_state_changing_partial_return() public {
-        uint256 set_call = scripter.call(
-            address(simpleReturn), abi.encodeWithSelector(SimpleReturn.setUint.selector, uint256(42)), 0
-        );
+        uint256 set_call =
+            scripter.call(address(simpleReturn), abi.encodeWithSelector(SimpleReturn.setUint.selector, uint256(42)), 0);
         uint256 use_call = scripter.call(address(math), abi.encodeWithSelector(Math.setNum.selector, uint256(0)), 0);
         scripter.useCallOutput(set_call.first(), use_call.first());
 
         (address[] memory targets, uint256[] memory offsets, bytes[] memory calldatas, uint256[] memory values) =
             scripter.build();
-        multicall.execute(targets, offsets, calldatas, values);
+        multicall.execute(targets, offsets, pack(calldatas), values);
 
         assertEq(math.number(), 42);
     }
@@ -126,32 +136,39 @@ contract MulticallScriptTest is Test, CallBuilder, MulticallScripter, UniV2 {
     // swap on v2 directly, using multicall scripter
     // weth.deposit() -> weth.transfer(univ2, amt) -> univ2.swap();
     function test_mint_weth_and_swap() public {
+        vm.skip(!forked);
         address pair = getPair(WETH, DAI);
         uint256 amount_out = getAmountOut(pair, ETH_AMT, WETH, DAI);
         (uint256 amount_0, uint256 amount_1) = WETH > DAI ? (amount_out, uint256(0)) : (uint256(0), amount_out);
 
         // encode calls
-        uint256 mint_weth = scripter.call(WETH, abi.encodeWithSignature("deposit()"), ETH_AMT);
-        uint256 transfer_to_pool =
-            scripter.call(WETH, abi.encodeWithSignature("transfer(address,uint256)", pair, ETH_AMT), 0);
-        uint256 swap = scripter.call(
-            pair,
-            abi.encodeWithSelector(IUniswapV2Pair.swap.selector, amount_0, amount_1, address(scripter), bytes("")),
-            0
+        scripter.call(WETH, abi.encodeWithSignature("deposit()"), ETH_AMT);
+        scripter.call(WETH, abi.encodeWithSignature("transfer(address,uint256)", pair, ETH_AMT), 0);
+        scripter.call(
+            pair, abi.encodeWithSelector(IUniswapV2Pair.swap.selector, amount_0, amount_1, address(this), bytes("")), 0
         );
         (address[] memory targets, uint256[] memory offsets, bytes[] memory calldatas, uint256[] memory values) =
             scripter.build();
 
+        // The deterministic test address already has ETH on mainnet. This batch must not
+        // retain any new ETH; pre-existing funds are outside the msg.value refund accounting.
+        uint256 executorEthBefore = address(multicall).balance;
+        uint256 daiBefore = IERC20(DAI).balanceOf(address(this));
         uint256 gasBefore = gasleft();
 
-        multicall.execute{value: ETH_AMT}(targets, offsets, calldatas, values);
+        multicall.execute{value: ETH_AMT}(targets, offsets, pack(calldatas), values);
 
         console2.log("gas used: ", gasBefore - gasleft());
+        assertEq(IERC20(DAI).balanceOf(address(this)) - daiBefore, amount_out);
+        assertEq(IERC20(WETH).balanceOf(address(multicall)), 0);
+        assertEq(IERC20(DAI).balanceOf(address(multicall)), 0);
+        assertEq(address(multicall).balance, executorEthBefore);
     }
 
     // weth.deposit() -> weth.transfer(univ2, amt) -> univ2.swap();
     // to compare gas against regular multicall
     function test_mint_weth_and_swap_multicall3() public {
+        vm.skip(!forked);
         address pair = getPair(WETH, DAI);
         address multicall3 = 0xcA11bde05977b3631167028862bE2a173976CA11;
         uint256 amount_out = getAmountOut(pair, ETH_AMT, WETH, DAI);
@@ -169,11 +186,12 @@ contract MulticallScriptTest is Test, CallBuilder, MulticallScripter, UniV2 {
             abi.encodeWithSelector(IUniswapV2Pair.swap.selector, amount_0, amount_1, address(this), bytes(""))
         );
 
+        uint256 daiBefore = IERC20(DAI).balanceOf(address(this));
         uint256 gasBefore = gasleft();
         IMulticall3(multicall3).aggregate3Value{value: ETH_AMT}(calls);
         console2.log("gas used: ", gasBefore - gasleft());
+        assertEq(IERC20(DAI).balanceOf(address(this)) - daiBefore, amount_out);
+        assertEq(IERC20(WETH).balanceOf(multicall3), 0);
     }
-
-    receive() external payable override {}
 }
 

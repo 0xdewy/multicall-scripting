@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0
 pragma solidity ^0.8.11;
 
 contract Math {
@@ -204,7 +204,7 @@ contract ArrayElementAccess {
 contract CalldataVerifier {
     uint256 public lastCalldataLength;
     function noArgs() external payable { lastCalldataLength = msg.data.length; }
-    function noArgsView() external view returns (uint256) { return msg.data.length; }
+    function noArgsView() external pure returns (uint256) { return msg.data.length; }
 }
 
 contract StringAndBytesOperations {
@@ -254,5 +254,87 @@ contract StringAndBytesOperations {
 
     function getConstantBytes() public pure returns (bytes memory) {
         return hex"deadbeefcafebabe1234567890abcdef";
+    }
+}
+
+/// @dev Exercises every calldata / return-data layout the JS builder must position correctly.
+contract Layouts {
+    struct Static {
+        uint256 nA;
+        uint256 nB;
+    }
+
+    struct Item {
+        uint256 id;
+        string name;
+    }
+
+    uint256 public x;
+    uint256 public y;
+    string public text;
+    string public text2;
+    uint256[] public nums;
+    Static[] public pairs;
+
+    // returns a dynamic tuple (contains a string): heads sit behind a pointer word
+    function getItem() external pure returns (Item memory) {
+        return Item(7, "seven");
+    }
+
+    // dynamic array as a non-first output
+    function getCountAndNums() external pure returns (uint256, uint256[] memory) {
+        uint256[] memory n = new uint256[](3);
+        n[0] = 10;
+        n[1] = 20;
+        n[2] = 30;
+        return (3, n);
+    }
+
+    // dynamic array of static structs
+    function getPairs() external pure returns (Static[] memory) {
+        Static[] memory p = new Static[](2);
+        p[0] = Static(1, 2);
+        p[1] = Static(3, 4);
+        return p;
+    }
+
+    function getWord() external pure returns (uint256) {
+        return 0xC0FFEE;
+    }
+
+    // static tuple parameter before a scalar parameter
+    function setStaticThenWord(Static calldata s, uint256 w) external {
+        x = s.nA + s.nB;
+        y = w;
+    }
+
+    function setWords(uint256 a, uint256 b) external {
+        x = a;
+        y = b;
+    }
+
+    function setNums(uint256 a, uint256[] calldata n) external {
+        x = a;
+        nums = n;
+    }
+
+    function setPairs(Static[] calldata p) external {
+        delete pairs;
+        for (uint256 i = 0; i < p.length; i++) {
+            pairs.push(p[i]);
+        }
+    }
+
+    function setTexts(string calldata a, string calldata b) external {
+        text = a;
+        text2 = b;
+    }
+
+    function numsLength() external view returns (uint256) {
+        return nums.length;
+    }
+
+    function pairsLength() external view returns (uint256) {
+        return pairs.length;
     }
 }

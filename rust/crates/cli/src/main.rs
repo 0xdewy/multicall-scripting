@@ -28,23 +28,31 @@ fn main() {
 
 fn run(calls_json: &str) -> Result<(), String> {
     let calls: Vec<Value> = serde_json::from_str(calls_json).map_err(|e| e.to_string())?;
+    for call in &calls {
+        validate_json_numbers(call)?;
+    }
     let mut builder = TransactionBuilder::new();
 
     for call in &calls {
         let abi_path = call["abiPath"].as_str().ok_or("missing abiPath")?;
-        let function_name = call["functionName"].as_str().ok_or("missing functionName")?;
+        let function_name = call["functionName"]
+            .as_str()
+            .ok_or("missing functionName")?;
         let target: Address = call["target"]
             .as_str()
             .ok_or("missing target")?
             .parse()
             .map_err(|e| format!("invalid target address: {e}"))?;
-        let value = parse_u256(&call["value"]);
+        let value = parse_u256(&call["value"])?;
 
         let abi = load_abi(abi_path)?;
-        let function = abi
+        let functions = abi
             .function(function_name)
-            .and_then(|fns| fns.first())
             .ok_or_else(|| format!("Function {function_name} not found in ABI"))?;
+        if functions.len() != 1 {
+            return Err(format!("Ambiguous function {function_name}; supply an ABI containing only the intended overload"));
+        }
+        let function = &functions[0];
 
         let json_args = call["args"].as_array().cloned().unwrap_or_default();
         if json_args.len() != function.inputs.len() {
@@ -66,10 +74,13 @@ fn run(calls_json: &str) -> Result<(), String> {
     let result = json!({
         "targets": out.targets.iter().map(|a| a.to_string()).collect::<Vec<_>>(),
         "offsets": out.offsets.iter().map(|o| o.to_string()).collect::<Vec<_>>(),
-        "calldatas": out.calldatas.iter().map(|c| c.to_string()).collect::<Vec<_>>(),
+        "calldatas": out.calldatas.to_string(),
         "msgValues": out.msg_values.iter().map(|v| v.to_string()).collect::<Vec<_>>(),
     });
-    println!("{}", serde_json::to_string(&result).map_err(|e| e.to_string())?);
+    println!(
+        "{}",
+        serde_json::to_string(&result).map_err(|e| e.to_string())?
+    );
     Ok(())
 }
 
@@ -79,8 +90,13 @@ fn build_args(function: &Function, json_args: &[Value]) -> Result<Vec<Arg>, Stri
         // A partial-return reference: { callIndex, offset, size }
         if let Some(obj) = raw.as_object() {
             if obj.contains_key("callIndex") {
-                let call_index = obj["callIndex"].as_u64().ok_or("ref.callIndex must be a number")? as usize;
-                let offset = obj["offset"].as_u64().ok_or("ref.offset must be a number")?;
+                let call_index = obj["callIndex"]
+                    .as_u64()
+                    .ok_or("ref.callIndex must be a number")?
+                    as usize;
+                let offset = obj["offset"]
+                    .as_u64()
+                    .ok_or("ref.offset must be a number")?;
                 let size = obj["size"].as_u64().ok_or("ref.size must be a number")?;
                 out.push(Arg::Ref(ReturnRef::raw(call_index, offset, size)));
                 continue;
@@ -116,11 +132,49 @@ fn to_coerce_string(val: &Value) -> String {
     }
 }
 
-fn parse_u256(val: &Value) -> U256 {
+fn validate_json_numbers(value: &Value) -> Result<(), String> {
+    match value {
+        Value::Number(n)
+            if !n
+                .as_i64()
+                .is_some_and(|v| v.unsigned_abs() <= 9_007_199_254_740_991) =>
+        {
+            return Err("JSON numbers must be safe integers; quote large integers".into());
+        }
+        Value::Array(items) => {
+            for item in items {
+                validate_json_numbers(item)?;
+            }
+        }
+        Value::Object(items) => {
+            for item in items.values() {
+                validate_json_numbers(item)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn parse_u256(val: &Value) -> Result<U256, String> {
     match val {
-        Value::String(s) if !s.is_empty() => s.parse().unwrap_or(U256::ZERO),
-        Value::Number(n) => U256::from(n.as_u64().unwrap_or(0)),
-        _ => U256::ZERO,
+        Value::Null => Ok(U256::ZERO),
+        Value::String(s) => {
+            let valid = if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+                !hex.is_empty() && hex.bytes().all(|c| c.is_ascii_hexdigit())
+            } else {
+                !s.is_empty() && s.bytes().all(|c| c.is_ascii_digit())
+            };
+            if !valid {
+                return Err("value must fit uint256".into());
+            }
+            s.parse().map_err(|_| "value must fit uint256".into())
+        }
+        Value::Number(n) => n
+            .as_u64()
+            .map(U256::from)
+            .ok_or("value must fit uint256".into()),
+        _ => Err("value must fit uint256".into()),
     }
 }
 
@@ -128,7 +182,8 @@ fn parse_u256(val: &Value) -> U256 {
 /// Mirrors js/abi.js (minus the multi-path fallback — the caller passes an explicit path).
 fn load_abi(path: &str) -> Result<JsonAbi, String> {
     let raw = fs::read_to_string(path).map_err(|e| format!("cannot read ABI {path}: {e}"))?;
-    let value: Value = serde_json::from_str(&raw).map_err(|e| format!("invalid ABI JSON {path}: {e}"))?;
+    let value: Value =
+        serde_json::from_str(&raw).map_err(|e| format!("invalid ABI JSON {path}: {e}"))?;
     let abi_value = if value.is_array() {
         value
     } else {
@@ -138,4 +193,35 @@ fn load_abi(path: &str) -> Result<JsonAbi, String> {
             .ok_or_else(|| format!("ABI file {path} has no `abi` field and is not an array"))?
     };
     serde_json::from_value(abi_value).map_err(|e| format!("cannot parse ABI {path}: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn malformed_value_is_not_silently_zero() {
+        for value in [
+            json!("oops"),
+            json!(""),
+            json!(" "),
+            json!("0x"),
+            json!("-1"),
+            json!(-1),
+            json!(1.5),
+            json!(true),
+        ] {
+            assert!(parse_u256(&value).is_err(), "{value}");
+        }
+        assert_eq!(parse_u256(&Value::Null).unwrap(), U256::ZERO);
+        assert_eq!(
+            parse_u256(&json!(U256::MAX.to_string())).unwrap(),
+            U256::MAX
+        );
+    }
+    #[test]
+    fn large_json_numbers_are_rejected_recursively() {
+        assert!(validate_json_numbers(&json!({"args": [[9007199254740993u64]]})).is_err());
+        assert!(validate_json_numbers(&json!({"args": [["9007199254740993"]]})).is_ok());
+        assert!(validate_json_numbers(&json!({"args": [9007199254740991u64]})).is_ok());
+    }
 }

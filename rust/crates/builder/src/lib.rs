@@ -4,21 +4,25 @@
 //! calldata of a later call. Offsets are produced by [`multicall_scripter_codec`]; ABI encoding
 //! uses `alloy-dyn-abi` (the role viem plays in the JS layer).
 //!
-//! ## Supported (parity-tested against the JS layer)
-//! - scalar return values chained as scalar arguments (the primary multicall pattern)
-//! - calls with no chained return, and state-changing calls with an indexed `msg.value`
-//! - a single dynamic (`bytes`/`string`) return sized via [`ReturnRef::with_length`]
-//! - multiple scalar return values (tuple of statics), referenced positionally
+//! Positions are derived from the real ABI encoding, exactly as in the JS builder: return-data
+//! offsets from the canonical layout of the producing function's outputs, calldata targets by
+//! reading the head pointers of the encoded calldata.
 //!
-//! ## Deferred (mirrors the `TODO`s in js/index.js:398,435 — not yet ported)
-//! - a [`ReturnRef`] nested inside an array/tuple argument
-//! - array-element references (`result[0]`) spliced into an array parameter
-//! - struct field access by name (use positional indices into the returned `Vec<ReturnRef>`)
+//! ## Supported (parity-tested against the JS layer)
+//! - scalar return values chained as scalar arguments, any number of calls apart
+//! - multiple scalar return values (tuple of statics), referenced positionally; a sole struct
+//!   output is flattened one level
+//! - a single dynamic (`bytes` / `string` / `T[]` of statics) return sized via
+//!   [`ReturnRef::with_length`]
+//! - state-changing calls with an indexed `msg.value`
+//!
+//! ## Not ported (use the JS builder)
+//! - a [`ReturnRef`] nested inside an array/tuple *argument* (top-level arguments only)
+//! - element access into a returned array (`result[i]`) and struct field access by name
 
 use alloy_dyn_abi::{DynSolType, DynSolValue};
-use alloy_json_abi::{Function, StateMutability};
+use alloy_json_abi::{Function, Param, StateMutability};
 use alloy_primitives::{Address, Bytes, FixedBytes, I256, U256};
-use std::collections::HashSet;
 use thiserror::Error;
 
 use multicall_scripter_codec as codec;
@@ -27,13 +31,12 @@ use multicall_scripter_codec as codec;
 pub enum BuildError {
     #[error("argument count mismatch: {got} vs {expected}")]
     ArgCountMismatch { got: usize, expected: usize },
+    #[error("{0} is view/pure; it cannot receive msg.value")]
+    ValueOnStaticCall(String),
     #[error("{ty} return value requires with_length() before use")]
     RequiresLength { ty: String },
-    #[error(
-        "output variable from call {call} at offset {offset} with size {size} has already been used; \
-         each output variable can only be used once"
-    )]
-    DuplicateDescriptor { call: usize, offset: u64, size: u64 },
+    #[error("cannot pass a {from} return value as a {to} argument")]
+    TypeMismatch { from: String, to: String },
     #[error("call #{call}: too many variables ({count}) from one call")]
     TooManyVars { call: usize, count: usize },
     #[error("call #{call} variable {var}: return data slice exceeds returnDataSize")]
@@ -50,39 +53,70 @@ pub enum BuildError {
 /// later `add_call` to chain it. Mirrors the JS descriptor object.
 #[derive(Debug, Clone)]
 pub struct ReturnRef {
+    owner: Option<std::sync::Arc<()>>,
     call_index: usize,
-    /// byte offset of this value within the producing call's return data
+    /// byte offset of this value within the producing call's return data (for dynamic values:
+    /// the length word)
     offset: u64,
-    /// byte length to copy (32 for statics; length+data for dynamics, set via `with_length`)
+    /// byte length to copy (32 for statics; length word + data for dynamics, set via `with_length`)
     size: u64,
     is_dynamic: bool,
     requires_length: bool,
-    /// requested data length set by `with_length`; used to size the calldata placeholder so the
-    /// spliced return data has reserved space (matches the JS descriptor's value sizing).
+    /// static size of one element, for `T[]` returns (with_length counts elements)
+    element_size: Option<u64>,
+    /// declared data length (bytes for bytes/string, elements for T[]) after `with_length`
     length: Option<u64>,
+    /// set when the value's position cannot be known before execution
+    unsupported: Option<String>,
     ty: String,
 }
 
 impl ReturnRef {
     /// Construct a static return reference from raw fields. Used by the CLI, where references
-    /// arrive as `{callIndex, offset, size}` JSON (mirrors the cli.js partial-return contract).
+    /// arrive as `{callIndex, offset, size}` JSON (mirrors the cli.js ref contract).
     pub fn raw(call_index: usize, offset: u64, size: u64) -> Self {
         Self {
+            owner: None,
             call_index,
             offset,
             size,
             is_dynamic: false,
             requires_length: false,
+            element_size: None,
             length: None,
+            unsupported: None,
             ty: String::new(),
         }
     }
 
-    /// Sizes a dynamic (`bytes`/`string`) return. `n` is the byte length of the data, mirroring
-    /// `DescriptorUtils.setupDynamicDescriptor` in js/index.js.
+    /// Declare the runtime length of a dynamic return value: byte length for `bytes`/`string`,
+    /// element count for `T[]`. It must be exact. The original length word is copied; an incorrect declaration
+    /// can revert or make the consumer read adjacent arguments. This is not a runtime length check.
     pub fn with_length(mut self, n: u64) -> Self {
-        // 32-byte length word + data padded to a 32-byte boundary
-        self.size = 32 + n.div_ceil(32) * 32;
+        if self.unsupported.is_some() {
+            return self;
+        }
+        if !self.is_dynamic {
+            self.unsupported = Some(format!(
+                "{} is static; with_length() is only for bytes, string and T[] return values",
+                self.ty
+            ));
+            return self;
+        }
+        let size = match self.element_size {
+            Some(elem) => n.checked_mul(elem).and_then(|n| n.checked_add(32)),
+            None => n
+                .div_ceil(32)
+                .checked_mul(32)
+                .and_then(|n| n.checked_add(32)),
+        };
+        match size {
+            Some(size) if size <= u16::MAX as u64 => self.size = size,
+            _ => {
+                self.unsupported = Some("returnDataSize is too large".into());
+                return self;
+            }
+        }
         self.requires_length = false;
         self.length = Some(n);
         self
@@ -110,14 +144,14 @@ struct Call {
 pub struct BuildOutput {
     pub targets: Vec<Address>,
     pub offsets: Vec<U256>,
-    pub calldatas: Vec<Bytes>,
+    pub calldatas: Bytes,
     pub msg_values: Vec<U256>,
 }
 
 #[derive(Default)]
 pub struct TransactionBuilder {
+    owner: std::sync::Arc<()>,
     calls: Vec<Call>,
-    used_descriptors: HashSet<String>,
 }
 
 impl TransactionBuilder {
@@ -125,7 +159,8 @@ impl TransactionBuilder {
         Self::default()
     }
 
-    /// Mirrors `addCall`. Returns one [`ReturnRef`] per declared output (positional).
+    /// Mirrors `addCall`. Returns one [`ReturnRef`] per declared output (positional; a sole
+    /// struct output is flattened into its components).
     pub fn add_call(
         &mut self,
         function: &Function,
@@ -139,13 +174,14 @@ impl TransactionBuilder {
                 expected: function.inputs.len(),
             });
         }
+        let is_static = matches!(
+            function.state_mutability,
+            StateMutability::Pure | StateMutability::View
+        );
+        if is_static && msg_value > U256::ZERO {
+            return Err(BuildError::ValueOnStaticCall(function.name.clone()));
+        }
 
-        let calltype_flag = match function.state_mutability {
-            StateMutability::Pure | StateMutability::View => codec::STATIC_CALL_FLAG,
-            _ => codec::CALL_FLAG,
-        };
-
-        // Resolve input parameter types once, via the canonical type string (handles tuples).
         let input_types: Vec<DynSolType> = function
             .inputs
             .iter()
@@ -156,29 +192,89 @@ impl TransactionBuilder {
             })
             .collect::<Result<_, _>>()?;
 
-        // Record return-data splices on producing calls (must happen before this call is pushed,
-        // matching js/index.js ordering).
-        self.process_output_descriptors(&args, &input_types)?;
+        // Validate every reference before recording any splice.
+        for (arg, ty) in args.iter().zip(&input_types) {
+            let Arg::Ref(r) = arg else { continue };
+            if r.owner
+                .as_ref()
+                .is_some_and(|owner| !std::sync::Arc::ptr_eq(owner, &self.owner))
+            {
+                return Err(BuildError::Unsupported(
+                    "Return reference belongs to another builder".into(),
+                ));
+            }
+            if let Some(reason) = &r.unsupported {
+                return Err(BuildError::Unsupported(reason.clone()));
+            }
+            if r.is_dynamic != is_dynamic(ty)
+                || (if r.is_dynamic {
+                    r.ty != ty.to_string()
+                } else {
+                    r.size != static_size(ty)
+                })
+            {
+                return Err(BuildError::TypeMismatch {
+                    from: r.ty.clone(),
+                    to: ty.to_string(),
+                });
+            }
+            if r.is_dynamic && r.requires_length {
+                return Err(BuildError::RequiresLength { ty: r.ty.clone() });
+            }
+            if r.call_index >= self.calls.len() || r.offset.checked_add(r.size).is_none() {
+                return Err(BuildError::Unsupported("Invalid return reference".into()));
+            }
+        }
 
-        // Build calldata: literals use their value, refs use the type's zero value (the on-chain
-        // VM splices the real return data over it at execution time).
+        // literals use their value; refs a placeholder occupying exactly the space the spliced
+        // return data will take
         let values: Vec<DynSolValue> = args
             .iter()
             .zip(&input_types)
             .map(|(arg, ty)| match arg {
                 Arg::Value(v) => v.clone(),
-                // A dynamic ref must reserve a placeholder sized to its data length so the on-chain
-                // splice has room (mirrors the JS descriptor's `value`). Static refs use the zero value.
                 Arg::Ref(r) if r.is_dynamic => placeholder_value(ty, r.length.unwrap_or(0)),
                 Arg::Ref(_) => default_value(ty),
             })
             .collect();
+        if !DynSolValue::matches_many(&values, &input_types) {
+            return Err(BuildError::TypeResolve(
+                "literal argument does not match its ABI type".into(),
+            ));
+        }
         let fn_calldata = encode_calldata(function, &values);
+
+        // the executor resolves memTargets relative to the calldata of the call *after* the
+        // producer, so add the size of every call in between
+        let mut head_pos = 4u64;
+        for (arg, ty) in args.iter().zip(&input_types) {
+            if let Arg::Ref(r) = arg {
+                let pos = if is_dynamic(ty) {
+                    4 + read_word(&fn_calldata, head_pos)
+                } else {
+                    head_pos
+                };
+                let distance: u64 = self.calls[r.call_index + 1..]
+                    .iter()
+                    .map(|c| region_size(&c.fn_calldata))
+                    .sum();
+                let producing = &mut self.calls[r.call_index];
+                producing.mem_targets.push(distance + pos);
+                producing.result_lengths.push(r.size);
+                producing.return_offsets.push(r.offset);
+                producing.return_data_size = producing.return_data_size.max(r.offset + r.size);
+            }
+            head_pos += head_size(ty);
+        }
 
         self.calls.push(Call {
             target,
             fn_calldata,
-            calltype_flag,
+            calltype_flag: if is_static {
+                codec::STATIC_CALL_FLAG
+            } else {
+                codec::CALL_FLAG
+            },
             mem_targets: Vec::new(),
             result_lengths: Vec::new(),
             return_offsets: Vec::new(),
@@ -186,111 +282,84 @@ impl TransactionBuilder {
             msg_value,
         });
 
-        Ok(self.build_function_outputs(function))
+        self.build_function_outputs(function)
     }
 
-    fn process_output_descriptors(
-        &mut self,
-        args: &[Arg],
-        input_types: &[DynSolType],
-    ) -> Result<(), BuildError> {
-        // First pass: positions of dynamic argument data within calldata (js/index.js:351-405).
-        let total_offset_fields = 32 * args.len() as u64;
-        let mut current_dynamic_pos = 4 + total_offset_fields;
-        let mut dynamic_positions: Vec<Option<u64>> = vec![None; args.len()];
-
-        for (i, (arg, ty)) in args.iter().zip(input_types).enumerate() {
-            if !is_dynamic_type(ty) {
-                continue;
-            }
-            dynamic_positions[i] = Some(current_dynamic_pos);
-            let data_size = match arg {
-                Arg::Ref(r) => r.size,
-                Arg::Value(v) => 32 + dynamic_value_data_size(v),
-            };
-            current_dynamic_pos += data_size;
-        }
-
-        // Second pass: record each ref's splice on the call that produces it.
-        for (index, arg) in args.iter().enumerate() {
-            let Arg::Ref(r) = arg else { continue };
-
-            if r.is_dynamic && r.requires_length {
-                return Err(BuildError::RequiresLength { ty: r.ty.clone() });
-            }
-
-            let id = format!("{}:{}:{}", r.call_index, r.offset, r.size);
-            if !self.used_descriptors.insert(id) {
-                return Err(BuildError::DuplicateDescriptor {
-                    call: r.call_index,
-                    offset: r.offset,
-                    size: r.size,
-                });
-            }
-
-            let param_offset = 4 + 32 * index as u64;
-            let mem_target = if r.is_dynamic {
-                dynamic_positions[index].unwrap_or(param_offset + 32)
-            } else {
-                param_offset
-            };
-
-            // Dynamic returns: skip the 32-byte offset word in the source return data.
-            let return_offset = if r.is_dynamic { r.offset + 32 } else { r.offset };
-            let result_length = r.size;
-
-            let producing = &mut self.calls[r.call_index];
-            producing.mem_targets.push(mem_target);
-            producing.result_lengths.push(result_length);
-            producing.return_offsets.push(return_offset);
-            producing.return_data_size = producing.return_data_size.max(return_offset + result_length);
-        }
-
-        Ok(())
-    }
-
-    /// Builds the [`ReturnRef`]s for the call just pushed. Flattens a single tuple output into its
-    /// (scalar) components; otherwise one ref per output. Mirrors `buildFunctionOutputs`.
-    fn build_function_outputs(&self, function: &Function) -> Vec<ReturnRef> {
+    /// Lays out the outputs of the call just pushed. Outputs form a tuple at byte 0 of the return
+    /// data; a sole struct output is flattened one level (behind its pointer word if dynamic).
+    fn build_function_outputs(&self, function: &Function) -> Result<Vec<ReturnRef>, BuildError> {
         let call_index = self.calls.len() - 1;
-        let mut outputs = Vec::new();
-        let mut offset = 0u64;
-
-        let push = |outputs: &mut Vec<ReturnRef>, ty: &str, offset: &mut u64| {
-            let is_dynamic = is_dynamic_type_str(ty);
-            outputs.push(ReturnRef {
-                call_index,
-                offset: *offset,
-                size: 32,
-                is_dynamic,
-                requires_length: is_dynamic,
-                length: None,
-                ty: ty.to_string(),
-            });
-            *offset += 32;
+        let (params, base): (Vec<&Param>, u64) = match function.outputs.as_slice() {
+            [only] if only.ty == "tuple" => {
+                let comps: Vec<&Param> = only.components.iter().collect();
+                let base = if comps.iter().any(|c| param_is_dynamic(c)) {
+                    32
+                } else {
+                    0
+                };
+                (comps, base)
+            }
+            outputs => (outputs.iter().collect(), 0),
         };
 
-        for output in &function.outputs {
-            if output.ty == "tuple" {
-                for comp in &output.components {
-                    // Nested tuples are deferred; flatten one level of scalar components.
-                    push(&mut outputs, &comp.ty, &mut offset);
-                }
+        let dynamics = params.iter().filter(|p| param_is_dynamic(p)).count();
+        let heads: u64 = params.iter().map(|p| param_head_size(p)).sum();
+        let mut head_pos = base;
+        let mut refs = Vec::with_capacity(params.len());
+        for p in params {
+            let dynamic = param_is_dynamic(p);
+            let (offset, unsupported) = if dynamic {
+                let reason = if dynamics > 1 {
+                    Some(format!(
+                        "{} return value: more than one dynamic value in the return data",
+                        p.ty
+                    ))
+                } else if p.ty != "bytes" && p.ty != "string" && !p.ty.ends_with("[]") {
+                    Some(format!("{} return value: whole dynamic tuples and fixed arrays of dynamic elements are not supported", p.ty))
+                } else if p.ty.ends_with("[]") && param_is_dynamic(&element_param(p)) {
+                    Some(format!(
+                        "{} return value: arrays of dynamic elements are not supported",
+                        p.ty
+                    ))
+                } else {
+                    None
+                };
+                (base + heads, reason)
             } else {
-                push(&mut outputs, &output.ty, &mut offset);
-            }
+                (head_pos, None)
+            };
+            let element_size = if dynamic && p.ty.ends_with("[]") {
+                Some(param_static_size(&element_param(p)))
+            } else {
+                None
+            };
+            refs.push(ReturnRef {
+                owner: Some(self.owner.clone()),
+                call_index,
+                offset,
+                size: if dynamic { 32 } else { param_static_size(p) },
+                is_dynamic: dynamic,
+                requires_length: dynamic,
+                element_size,
+                length: None,
+                unsupported,
+                ty: p.selector_type().into_owned(),
+            });
+            head_pos += param_head_size(p);
         }
-
-        outputs
+        Ok(refs)
     }
 
     /// Mirrors `build()`. Produces `(targets, offsets, calldatas, msgValues)`.
     pub fn build(&self) -> Result<BuildOutput, BuildError> {
         let mut out = BuildOutput::default();
+        let mut packed = Vec::new();
 
         for (call_index, call) in self.calls.iter().enumerate() {
             out.targets.push(call.target);
-            out.calldatas.push(call.fn_calldata.clone());
+            packed.extend_from_slice(&U256::from(call.fn_calldata.len()).to_be_bytes::<32>());
+            packed.extend_from_slice(&call.fn_calldata);
+            packed.resize(packed.len().div_ceil(32) * 32, 0);
 
             if call.mem_targets.len() > codec::PARTIAL_RETURN_VARS as usize {
                 return Err(BuildError::TooManyVars {
@@ -300,7 +369,10 @@ impl TransactionBuilder {
             }
             for j in 0..call.return_offsets.len() {
                 if call.return_offsets[j] + call.result_lengths[j] > call.return_data_size {
-                    return Err(BuildError::SliceExceedsReturnData { call: call_index, var: j });
+                    return Err(BuildError::SliceExceedsReturnData {
+                        call: call_index,
+                        var: j,
+                    });
                 }
             }
 
@@ -315,33 +387,29 @@ impl TransactionBuilder {
                         call.return_data_size,
                     )?
                 }
-            } else if !call.mem_targets.is_empty() {
-                let msg_value_index = if call.msg_value > U256::ZERO {
-                    out.msg_values.len() as u64 + 1
-                } else {
-                    0
-                };
+            } else {
+                let mut msg_value_index = 0;
                 if call.msg_value > U256::ZERO {
                     out.msg_values.push(call.msg_value);
+                    msg_value_index = out.msg_values.len() as u64;
                 }
-                codec::call_partial_return(
-                    msg_value_index,
-                    &call.mem_targets,
-                    &call.result_lengths,
-                    &call.return_offsets,
-                    call.return_data_size,
-                )?
-            } else if call.msg_value > U256::ZERO {
-                let idx = out.msg_values.len() as u64 + 1;
-                out.msg_values.push(call.msg_value);
-                codec::state_changing_call(idx)?
-            } else {
-                codec::state_changing_call(0)?
+                if call.mem_targets.is_empty() {
+                    codec::state_changing_call(msg_value_index)?
+                } else {
+                    codec::call_partial_return(
+                        msg_value_index,
+                        &call.mem_targets,
+                        &call.result_lengths,
+                        &call.return_offsets,
+                        call.return_data_size,
+                    )?
+                }
             };
 
             out.offsets.push(offset);
         }
 
+        out.calldatas = packed.into();
         Ok(out)
     }
 }
@@ -353,29 +421,97 @@ fn encode_calldata(function: &Function, values: &[DynSolValue]) -> Bytes {
     Bytes::from(data)
 }
 
-fn is_dynamic_type(ty: &DynSolType) -> bool {
-    matches!(ty, DynSolType::Bytes | DynSolType::String | DynSolType::Array(_))
+/// bytes a call occupies in the executor's calldata region: [length word][data padded to 32]
+fn region_size(calldata: &Bytes) -> u64 {
+    32 + (calldata.len() as u64).div_ceil(32) * 32
 }
 
-fn is_dynamic_type_str(ty: &str) -> bool {
-    if ty == "bytes" || ty == "string" {
-        return true;
-    }
-    if let Some(stripped) = ty.strip_suffix("[]") {
-        return stripped != "string" && stripped != "bytes";
-    }
-    false
+fn read_word(data: &Bytes, pos: u64) -> u64 {
+    let pos = pos as usize;
+    let word = U256::from_be_slice(&data[pos..pos + 32]);
+    u64::try_from(word).expect("head pointer fits in u64")
 }
 
-/// Byte length of a dynamic literal's data region (excluding the length word), padded to 32.
-fn dynamic_value_data_size(v: &DynSolValue) -> u64 {
-    let len = match v {
-        DynSolValue::Bytes(b) => b.len() as u64,
-        DynSolValue::String(s) => s.len() as u64,
-        DynSolValue::Array(items) => return items.len() as u64 * 32,
-        _ => 0,
+// ---- layout helpers over DynSolType (inputs) ----
+
+fn is_dynamic(ty: &DynSolType) -> bool {
+    match ty {
+        DynSolType::Bytes | DynSolType::String | DynSolType::Array(_) => true,
+        DynSolType::FixedArray(inner, _) => is_dynamic(inner),
+        DynSolType::Tuple(tys) => tys.iter().any(is_dynamic),
+        _ => false,
+    }
+}
+
+fn static_size(ty: &DynSolType) -> u64 {
+    match ty {
+        DynSolType::FixedArray(inner, n) => *n as u64 * static_size(inner),
+        DynSolType::Tuple(tys) => tys.iter().map(static_size).sum(),
+        _ => 32,
+    }
+}
+
+fn head_size(ty: &DynSolType) -> u64 {
+    if is_dynamic(ty) {
+        32
+    } else {
+        static_size(ty)
+    }
+}
+
+// ---- layout helpers over ABI Params (outputs) ----
+
+fn array_suffix(ty: &str) -> Option<(&str, Option<usize>)> {
+    let open = ty.rfind('[')?;
+    if !ty.ends_with(']') {
+        return None;
+    }
+    let inner = &ty[open + 1..ty.len() - 1];
+    let count = if inner.is_empty() {
+        None
+    } else {
+        Some(inner.parse().ok()?)
     };
-    len.div_ceil(32) * 32
+    Some((&ty[..open], count))
+}
+
+fn element_param(p: &Param) -> Param {
+    let (base, _) = array_suffix(&p.ty).expect("array type");
+    Param {
+        ty: base.to_string(),
+        name: p.name.clone(),
+        components: p.components.clone(),
+        internal_type: None,
+    }
+}
+
+fn param_is_dynamic(p: &Param) -> bool {
+    if let Some((_, count)) = array_suffix(&p.ty) {
+        return count.is_none() || param_is_dynamic(&element_param(p));
+    }
+    match p.ty.as_str() {
+        "bytes" | "string" => true,
+        "tuple" => p.components.iter().any(param_is_dynamic),
+        _ => false,
+    }
+}
+
+fn param_static_size(p: &Param) -> u64 {
+    if let Some((_, Some(count))) = array_suffix(&p.ty) {
+        return count as u64 * param_static_size(&element_param(p));
+    }
+    if p.ty == "tuple" {
+        return p.components.iter().map(param_static_size).sum();
+    }
+    32
+}
+
+fn param_head_size(p: &Param) -> u64 {
+    if param_is_dynamic(p) {
+        32
+    } else {
+        param_static_size(p)
+    }
 }
 
 /// Placeholder value for a dynamic ref argument, sized to `n` so its calldata layout (and thus the
@@ -386,7 +522,9 @@ fn placeholder_value(ty: &DynSolType, n: u64) -> DynSolValue {
     match ty {
         DynSolType::String => DynSolValue::String(" ".repeat(n)),
         DynSolType::Bytes => DynSolValue::Bytes(vec![0u8; n]),
-        DynSolType::Array(inner) => DynSolValue::Array((0..n).map(|_| default_value(inner)).collect()),
+        DynSolType::Array(inner) => {
+            DynSolValue::Array((0..n).map(|_| default_value(inner)).collect())
+        }
         _ => default_value(ty),
     }
 }

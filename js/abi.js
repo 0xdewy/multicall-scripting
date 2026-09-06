@@ -6,13 +6,9 @@ export function loadABI(path) {
     content = readFileSync(path, "utf8");
   } catch {
     try {
-      content = readFileSync(`./${path}`, "utf8");
+      content = readFileSync(`../out/${path}`, "utf8");
     } catch {
-      try {
-        content = readFileSync(`../out/${path}`, "utf8");
-      } catch {
-        throw new Error(`Could not find ABI file at paths: ${path}, ./${path}, ../out/${path}`);
-      }
+      throw new Error(`Could not find ABI file at paths: ${path}, ../out/${path}`);
     }
   }
   const artifact = JSON.parse(content);

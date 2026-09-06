@@ -1,5 +1,5 @@
 import { fileURLToPath } from "url";
-import { TransactionBuilder } from "./index.js";
+import { TransactionBuilder, Descriptor } from "./index.js";
 import { loadABI } from "./abi.js";
 
 export function addCallsAndBuild(calls) {
@@ -14,11 +14,13 @@ export function addCallsAndBuild(calls) {
         throw new Error(`Function ${call.functionName} not found in ABI`);
       }
       const processedArgs = call.args.map((arg, index) => {
-        if (arg && typeof arg === "object" && "callIndex" in arg && "offset" in arg && "size" in arg) {
-          if (typeof arg.callIndex !== "number" || typeof arg.offset !== "number" || typeof arg.size !== "number") {
+        // a reference to an earlier call's return data: { callIndex, offset, size }
+        if (arg && typeof arg === "object" && !Array.isArray(arg) && "callIndex" in arg) {
+          const [callIndex, offset, size] = [arg.callIndex, arg.offset, arg.size].map(Number);
+          if (![callIndex, offset, size].every(Number.isInteger)) {
             throw new Error(`Invalid partial return reference object at index ${index}`);
           }
-          return { callIndex: arg.callIndex, offset: arg.offset, size: arg.size };
+          return new Descriptor({ callIndex, offset, size, type: "ref", isDynamic: false, requiresLength: false, unsupported: null });
         }
         const inputType = functionAbi.inputs[index].type;
         if (inputType.includes("int") &&
@@ -36,7 +38,7 @@ export function addCallsAndBuild(calls) {
         call.target,
         call.functionName,
         processedArgs,
-        call.value ? BigInt(call.value) : 0n,
+        call.value == null ? 0n : call.value,
       );
     } catch (error) {
       throw new Error(`Error processing call ${call.functionName}: ${error.message}`, { cause: error });
@@ -52,7 +54,11 @@ function main() {
     process.exit(1);
   }
   try {
-    const calls = JSON.parse(args[0], (_key, value) => typeof value === "number" ? value.toString() : value);
+    const calls = JSON.parse(args[0], (_key, value) => {
+      if (typeof value !== "number") return value;
+      if (!Number.isSafeInteger(value)) throw new Error("JSON numbers must be safe integers; quote large integers");
+      return value.toString();
+    });
     const result = addCallsAndBuild(calls);
     const serializableResult = {
       targets: result.targets,

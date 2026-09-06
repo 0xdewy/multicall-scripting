@@ -19,8 +19,6 @@ struct Schema {
 #[derive(Deserialize)]
 struct Flag {
     value: String,
-    #[serde(default)]
-    status: Option<String>,
 }
 
 fn main() {
@@ -53,15 +51,11 @@ fn main() {
         out.push_str(&format!("pub const {}: u8 = 0x{:02X};\n", name, value));
     }
 
-    // Runtime table of (value, name, implemented) for validate_offset.
-    out.push_str("\npub const FLAGS: &[(u8, &str, bool)] = &[\n");
+    // Runtime table of (value, name) for validate_offset.
+    out.push_str("\npub const FLAGS: &[(u8, &str)] = &[\n");
     for (name, flag) in &schema.flags {
         let value = parse_hex_u8(&flag.value);
-        let implemented = flag.status.as_deref() != Some("unimplemented");
-        out.push_str(&format!(
-            "    (0x{:02X}, \"{}\", {}),\n",
-            value, name, implemented
-        ));
+        out.push_str(&format!("    (0x{:02X}, \"{}\"),\n", value, name));
     }
     out.push_str("];\n");
 
