@@ -298,10 +298,12 @@ prints the fork block, deploys all three contracts, checks a second deployment r
 - a real EIP-7702 authorization, self-call, signed relayed batch and rejected replay work;
 - a deployment rerun rejects mismatched code, and both Solidity mainnet-fork swaps pass.
 
-If `ENSO_API_KEY` is already exported, the rehearsal also requests live Enso `delegate`
-ETH → USDC and ETH → DAI routes. It executes each underlying command program through Enso's
+If `ENSO_API_KEY` is already exported, the rehearsal also requests live Enso `delegate` routes.
+It executes each underlying command program through Enso's
 EIP-7702 VM and its translated Scripter batch from identical fork state, asserts identical output
-and `minAmountOut`, and reports the executor gas difference. The script never sources `.env`;
+and `minAmountOut`, and reports the executor gas difference. The live matrix also tries vault and
+LP zaps plus 2, 4, and 8-leg swap bundles, reporting the largest translated program and the first
+unsupported Weiroll feature instead of hiding the boundary. The script never sources `.env`;
 `.env` is ignored by Git. Without the exported key, this optional live check reports `SKIP`.
 
 The process uses public Anvil test accounts and sends transactions only to its own local node.
