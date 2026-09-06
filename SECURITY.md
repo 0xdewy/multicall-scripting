@@ -120,6 +120,11 @@ Build: the optimizer was off; it is now on (via-IR), and the compilation target 
   enforced; do not use the signature bytes as an identifier.
 - **The Rust builder** covers scalar chaining and one dynamic value per call. Nested references
   and element access are JS-only.
+- **External route builders remain trusted input.** The Enso adapter validates transaction shape,
+  caller context, value encoding, and router-only use; it cannot prove that API-provided targets
+  or calldata express the route the user intended. Inspect route metadata, set a bounded
+  slippage/minimum output, use a fresh quote, and simulate before signing. Cross-chain completion
+  is asynchronous and outside the source-chain batch's atomicity.
 
 ## Release validation — 2026-09-05
 

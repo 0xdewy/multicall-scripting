@@ -52,5 +52,10 @@ DEPLOY_7702=true script/deploy.sh "$FORK_LOCAL" --sender "$FORK_SENDER" --unlock
 # Idempotence: the second run must accept the existing exact bytecode and send no deployments.
 DEPLOY_7702=true script/deploy.sh "$FORK_LOCAL" --sender "$FORK_SENDER" --unlocked --broadcast
 bun js/test/mainnet.js "$FORK_LOCAL"
+if [[ -n "${ENSO_API_KEY:-}" ]]; then
+  bun js/test/enso-mainnet.js "$FORK_LOCAL"
+else
+  echo "SKIP Enso live route (ENSO_API_KEY is not exported)"
+fi
 # Use the upstream directly: nested forking through Anvil can serialize remote storage fetches.
 ETH_RPC_URL="$FORK_UPSTREAM" FORK_BLOCK="$FORK_BLOCK" forge test --match-contract CallBuilderTest --threads 1 -vv

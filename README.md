@@ -89,6 +89,43 @@ The declared length must be exact. The executor reverts (`InsufficientReturnData
 returns too few bytes; incorrect lengths can also make the consumer read adjacent arguments.
 The declaration is a caller precondition, not a runtime length check.
 
+### Enso router responses
+
+Enso already returns a complete transaction, so wrap its `router` response as raw calls rather
+than decoding its internal route. The adapter preserves every pre-transaction, the main
+transaction, calldata, order, and ETH value:
+
+```javascript
+import { buildEnsoRouterBatch } from "multicall-scripter/enso";
+
+const route = await enso.getRouteData({
+  chainId: 1,
+  fromAddress: EXECUTOR,
+  routingStrategy: "router",
+  // tokenIn, tokenOut, amountIn, receiver, slippage...
+});
+const { batch, value } = buildEnsoRouterBatch(route, {
+  caller: EXECUTOR,
+  routingStrategy: "router",
+});
+
+await walletClient.writeContract({
+  address: EXECUTOR, abi: EXECUTOR_ABI, functionName: "execute",
+  args: [batch.targets, batch.offsets, batch.calldatas, batch.msgValues],
+  value,
+});
+```
+
+`caller` must match every returned `tx.from`. For the bare executor it is the executor address;
+under EIP-7702 it is the delegating EOA. The adapter rejects Enso `delegate` responses because
+those require the smart wallet to use `delegatecall`, which this project deliberately excludes.
+Use Enso's `router` strategy and send the returned `tx.to`; do not hardcode an Enso address.
+
+For ERC-20 input, approvals and funding must belong to the execution account. A public bare
+executor must receive tokens inside the same atomic batch and must not retain approvals or assets.
+EIP-7702 is the natural path when the EOA already owns the input tokens. Cross-chain routes only
+initiate work on the source chain; destination execution cannot be composed into the same batch.
+
 ## Rules
 
 - **Successful calls can return `false`.** The executor propagates EVM reverts; it does not interpret ERC-20 boolean results. Scripts must enforce their own success conditions.
@@ -256,6 +293,12 @@ prints the fork block, deploys all three contracts, checks a second deployment r
 - a late slippage failure rolls back the swaps, balances and approvals;
 - a real EIP-7702 authorization, self-call, signed relayed batch and rejected replay work;
 - a deployment rerun rejects mismatched code, and both Solidity mainnet-fork swaps pass.
+
+If `ENSO_API_KEY` is already exported, the rehearsal also fetches live Enso ETH → USDC and
+ETH → DAI `router` routes, converts them into Scripter batches, executes them on the fork, checks
+`minAmountOut`, and compares output and gas against the identical direct Enso transactions from
+an Anvil snapshot. The script never sources `.env`;
+`.env` is ignored by Git. Without the exported key, this optional live check reports `SKIP`.
 
 The process uses public Anvil test accounts and sends transactions only to its own local node.
 Historical blocks may require an archive RPC; public endpoints can impose rate or history limits.
