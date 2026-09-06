@@ -124,6 +124,8 @@ computed ETH values, state replacement, and Weiroll's composite state indices. T
 route-dependent experiment until the exact live response passes simulation and differential
 execution against Enso's VM. Enso also requires a consumed scalar return to be exactly 32 bytes;
 Scripter requires at least 32, so simulation is the compatibility check for each concrete route.
+The returned outer `value` follows Enso's transaction, while individual calls may spend the EOA's
+existing ETH balance; inspect `batch.msgValues` when enforcing a maximum spend in a wallet UI.
 
 For ERC-20 input, approvals and funding must belong to the execution account. A public bare
 executor must receive tokens inside the same atomic batch and must not retain approvals or assets.

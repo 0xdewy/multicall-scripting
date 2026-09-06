@@ -216,8 +216,6 @@ export function buildEnsoDelegateBatch(response, {caller, routingStrategy}) {
             : callPartialReturn(valueIndex, destinations, lengths, sources, 32);
     });
     const requiredValue = preTransactions.reduce((sum, tx) => sum + tx.value, main.value);
-    const spentValue = msgValues.reduce((sum, value) => sum + value, 0n);
-    if (spentValue > requiredValue) throw new Error("Enso commands spend more ETH than the delegate transaction supplies");
     return {batch: {targets, offsets, calldatas: packFrames(calls), msgValues}, value: requiredValue,
         commandCount: calls.length - preTransactions.length};
 }

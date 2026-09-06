@@ -55,12 +55,13 @@ describe("Enso delegate translator", () => {
     test("reconstructs literal dynamic arguments and fixed call value", () => {
         const dynamic = `0x${stateWord(3).slice(2)}010203${"00".repeat(29)}`;
         const call = command("0x12345678", 0x03, [0, 0x81], 0xff);
-        const {batch, value} = buildEnsoDelegateBatch(response([call], [stateWord(7), dynamic], 7n), {
+        // Delegate routes may spend the EOA's existing balance with tx.value == 0.
+        const {batch, value} = buildEnsoDelegateBatch(response([call], [stateWord(7), dynamic]), {
             caller: CALLER, routingStrategy: "delegate",
         });
         expect(frames(batch.calldatas)).toEqual([`0x12345678${stateWord(32).slice(2)}${dynamic.slice(2)}`]);
         expect(batch.msgValues).toEqual([7n]);
-        expect(value).toBe(7n);
+        expect(value).toBe(0n);
     });
 
     test("supports extended commands", () => {
