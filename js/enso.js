@@ -1,4 +1,4 @@
-import { decodeFunctionData, getAddress, parseAbi } from "viem";
+import { decodeFunctionData, encodeAbiParameters, getAddress, keccak256, parseAbi } from "viem";
 import { callPartialReturn, stateChangingCall, staticCall, staticCallPartialReturn } from "./encoding.js";
 
 const EXECUTE_SHORTCUT_ABI = parseAbi([
@@ -10,6 +10,19 @@ const VARIABLE = 0x80, VALUE_MASK = 0x7f, END = 0xff;
 const USE_STATE = 0xfe, ARRAY_START = 0xfd, TUPLE_START = 0xfc, DYNAMIC_END = 0xfb;
 const SPECIAL_INDICES = new Set([USE_STATE, ARRAY_START, TUPLE_START, DYNAMIC_END]);
 const IDENTITY_PRECOMPILE = "0x0000000000000000000000000000000000000004";
+const NATIVE_TOKEN = "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE";
+const APPROVE = "0x095ea7b3", INCREASE_ALLOWANCE = "0x39509351", SET_APPROVAL_FOR_ALL = "0xa22cb465";
+const APPROVAL_SELECTORS = new Set([APPROVE, INCREASE_ALLOWANCE, SET_APPROVAL_FOR_ALL]);
+const UNSUPPORTED_AUTHORIZATION_SELECTORS = new Set(["0xd505accf", "0x8fcbaf0c", "0x87517c45"]);
+
+/** Compatibility boundary reviewed against Enso's Weiroll v1.4.1 deployment. */
+export const ENSO_COMPATIBILITY = Object.freeze({
+    chainId: 1,
+    weirollVersion: "1.4.1",
+    weirollCommit: "900250114203727ff236d3f6313673c17c2d90dd",
+    eip7702Implementation: "0x0Aeb78D3f961b0394E4A3B94537b543e9E57Bab1",
+    eip7702CodeHash: "0x93b2dfa2f4fa04a1b1f2b15652bda0319f96e715a9d55eb91cb360ce7227b7d3",
+});
 const strip0x = (value) => value.slice(2);
 const byteLength = (value) => strip0x(value).length / 2;
 const pad32 = (n) => Math.ceil(n / 32) * 32;
@@ -120,10 +133,102 @@ function packFrames(calls) {
     }).join("");
 }
 
-/** Translate the representable subset of an Enso `delegate` Weiroll program to direct Scripter calls. */
-export function buildEnsoDelegateBatch(response, {caller, routingStrategy}) {
+function calldataWord(data, index, label) {
+    const start = 10 + index * 64;
+    if (data.length < start + 64) throw new Error(`Enso ${label} calldata is truncated`);
+    return `0x${data.slice(start, start + 64)}`;
+}
+
+function approvalFor(call, index) {
+    const selector = call.data.slice(0, 10);
+    if (UNSUPPORTED_AUTHORIZATION_SELECTORS.has(selector)) {
+        throw new Error(`Enso call #${index} uses unsupported permit or Permit2 authorization ${selector}`);
+    }
+    if (!APPROVAL_SELECTORS.has(selector)) return null;
+    const operator = address(`0x${calldataWord(call.data, 0, `call #${index}`).slice(-40)}`, `call #${index} approval operator`);
+    if (selector === SET_APPROVAL_FOR_ALL) {
+        const enabled = BigInt(calldataWord(call.data, 1, `call #${index}`));
+        if (enabled > 1n) throw new Error(`Enso call #${index} has an invalid setApprovalForAll boolean`);
+        return {callIndex: index, token: call.target, operator, amount: enabled === 1n ? null : 0n, kind: "setApprovalForAll"};
+    }
+    return {callIndex: index, token: call.target, operator,
+        amount: BigInt(calldataWord(call.data, 1, `call #${index}`)),
+        kind: selector === APPROVE ? "approve" : "increaseAllowance"};
+}
+
+function addressEvidence(calls, expected) {
+    const needle = expected.slice(2).toLowerCase();
+    return calls.some(call => strip0x(call.data).toLowerCase().includes(needle));
+}
+
+function normalizeApproval(rule, index) {
+    if (!rule || typeof rule !== "object") throw new Error(`Enso policy.allowedApprovals[${index}] must be an object`);
+    return {
+        token: address(rule.token, `policy.allowedApprovals[${index}].token`),
+        operator: address(rule.operator, `policy.allowedApprovals[${index}].operator`),
+        maxAmount: uint256(rule.maxAmount, `policy.allowedApprovals[${index}].maxAmount`),
+        allowAll: rule.allowAll === true,
+    };
+}
+
+function enforcePolicy(inspected, policy) {
+    if (!policy || typeof policy !== "object") throw new Error("Enso policy is required before building an executable batch");
+    const maxEthSpend = uint256(policy.maxEthSpend, "policy.maxEthSpend");
+    if (inspected.totalEthSpend > maxEthSpend) {
+        throw new Error(`Enso route spends ${inspected.totalEthSpend} wei, above policy.maxEthSpend ${maxEthSpend}`);
+    }
+    if (!Array.isArray(policy.allowedTargets) || policy.allowedTargets.length === 0) {
+        throw new Error("Enso policy.allowedTargets must be a non-empty independent allowlist");
+    }
+    const allowedTargets = new Set(policy.allowedTargets.map((target, i) =>
+        address(target, `policy.allowedTargets[${i}]`).toLowerCase()));
+    for (const target of inspected.targets) {
+        if (target.toLowerCase() !== IDENTITY_PRECOMPILE && !allowedTargets.has(target.toLowerCase())) {
+            throw new Error(`Enso target ${target} is not allowed by policy`);
+        }
+    }
+    const approvals = (policy.allowedApprovals ?? []).map(normalizeApproval);
+    for (const approval of inspected.approvals) {
+        const rule = approvals.find(candidate => candidate.token === approval.token && candidate.operator === approval.operator);
+        if (!rule) throw new Error(`Enso ${approval.kind} from ${approval.token} to ${approval.operator} is not allowed by policy`);
+        if (approval.amount === null ? !rule.allowAll : approval.amount > rule.maxAmount) {
+            throw new Error(`Enso ${approval.kind} exceeds policy for ${approval.token} and ${approval.operator}`);
+        }
+    }
+    const receiver = address(policy.expectedReceiver, "policy.expectedReceiver");
+    if (!addressEvidence(inspected.calls, receiver)) {
+        throw new Error(`Enso expected receiver ${receiver} is not present in translated calldata`);
+    }
+    const inputToken = address(policy.expectedInputToken, "policy.expectedInputToken");
+    const outputToken = address(policy.expectedOutputToken, "policy.expectedOutputToken");
+    const hasInput = inputToken === NATIVE_TOKEN
+        ? inspected.totalEthSpend > 0n
+        : inspected.targets.includes(inputToken) || addressEvidence(inspected.calls, inputToken);
+    if (!hasInput) throw new Error(`Enso expected input token ${inputToken} is not present in the translated route`);
+    if (!inspected.targets.includes(outputToken) && !addressEvidence(inspected.calls, outputToken)) {
+        throw new Error(`Enso expected output token ${outputToken} is not present in the translated route`);
+    }
+}
+
+/** Check that the fork uses the exact Enso EIP-7702 implementation this decoder was reviewed for. */
+export async function verifyEnsoCompatibility(client, {chainId = ENSO_COMPATIBILITY.chainId} = {}) {
+    if (chainId !== ENSO_COMPATIBILITY.chainId) throw new Error(`Enso compatibility is pinned to chain ${ENSO_COMPATIBILITY.chainId}`);
+    const code = await client.getCode({address: ENSO_COMPATIBILITY.eip7702Implementation});
+    if (!code || code === "0x") throw new Error("Pinned Enso EIP-7702 implementation is not deployed");
+    const codeHash = keccak256(code);
+    if (codeHash !== ENSO_COMPATIBILITY.eip7702CodeHash) {
+        throw new Error(`Pinned Enso EIP-7702 code hash mismatch: ${codeHash}`);
+    }
+    return ENSO_COMPATIBILITY;
+}
+
+/** Decode the representable subset without authorizing it for execution. */
+export function inspectEnsoDelegateRoute(response, {caller, routingStrategy, chainId}) {
     if (routingStrategy !== "delegate") {
         throw new Error("Only Enso delegate responses expose a program for direct Scripter execution");
+    }
+    if (chainId !== ENSO_COMPATIBILITY.chainId) {
+        throw new Error(`Enso compatibility is pinned to chain ${ENSO_COMPATIBILITY.chainId}`);
     }
     if (!response || typeof response !== "object") throw new Error("Enso response must be an object");
     const executionAccount = address(caller, "caller");
@@ -133,6 +238,14 @@ export function buildEnsoDelegateBatch(response, {caller, routingStrategy}) {
     const preTransactions = (response.preTransactions ?? []).map((entry, i) =>
         routeTransaction(entry, `preTransactions[${i}]`, executionAccount));
     const main = routeTransaction(response.tx, "tx", executionAccount);
+    if (main.target !== executionAccount) {
+        throw new Error("Enso delegate tx.to must be the delegated execution account");
+    }
+    const routeHash = keccak256(encodeAbiParameters([{
+        type: "tuple[]", components: [
+            {name: "target", type: "address"}, {name: "data", type: "bytes"}, {name: "value", type: "uint256"},
+        ],
+    }], [[...preTransactions, main].map(({target, data, value}) => ({target, data, value}))]));
     let decoded;
     try { decoded = decodeFunctionData({abi: EXECUTE_SHORTCUT_ABI, data: main.data}); }
     catch { throw new Error("Enso delegate tx.data is not executeShortcut calldata"); }
@@ -251,7 +364,41 @@ export function buildEnsoDelegateBatch(response, {caller, routingStrategy}) {
             : callPartialReturn(valueIndex, destinations, lengths, sources, 32);
     });
     const requiredValue = preTransactions.reduce((sum, tx) => sum + tx.value, main.value);
+    const totalEthSpend = msgValues.reduce((sum, value) => sum + value, 0n);
+    const approvals = expanded.map(approvalFor).filter(Boolean);
     return {batch: {targets, offsets, calldatas: packFrames(expanded), msgValues}, value: requiredValue,
         commandCount: expanded.length - preTransactions.length,
-        relayCount: relays.reduce((sum, indexes) => sum + indexes.length, 0)};
+        relayCount: relays.reduce((sum, indexes) => sum + indexes.length, 0),
+        totalEthSpend, targets: [...new Set(targets)], approvals,
+        calls: expanded.map(({target, data, value, isStatic}) => ({target, data, value, isStatic})),
+        compatibility: ENSO_COMPATIBILITY, routeHash};
+}
+
+/** Translate and authorize an Enso route under an explicit wallet policy. */
+export function buildEnsoDelegateBatch(response, options) {
+    const inspected = inspectEnsoDelegateRoute(response, options);
+    enforcePolicy(inspected, options?.policy);
+    return inspected;
+}
+
+/** Gate signing on an exact differential fork simulation and application-level bounds. */
+export function assertEnsoSimulation({routeHash, chainId, forkBlock, enso, scripter, minOutput, maxInput}) {
+    if (!enso || !scripter) throw new Error("Both Enso and Scripter simulation results are required");
+    if (!/^0x[0-9a-fA-F]{64}$/.test(routeHash ?? "")) throw new Error("A valid translated routeHash is required");
+    if (chainId !== ENSO_COMPATIBILITY.chainId) throw new Error(`Simulation must use chain ${ENSO_COMPATIBILITY.chainId}`);
+    if (!Number.isSafeInteger(forkBlock) || forkBlock <= 0) throw new Error("Simulation forkBlock must be a positive safe integer");
+    if (enso.routeHash?.toLowerCase() !== routeHash.toLowerCase()
+        || scripter.routeHash?.toLowerCase() !== routeHash.toLowerCase()) {
+        throw new Error("Simulation results do not match the translated routeHash");
+    }
+    const ensoOutput = uint256(enso.outputDelta, "simulation.enso.outputDelta");
+    const scripterOutput = uint256(scripter.outputDelta, "simulation.scripter.outputDelta");
+    const ensoInput = uint256(enso.inputDelta, "simulation.enso.inputDelta");
+    const scripterInput = uint256(scripter.inputDelta, "simulation.scripter.inputDelta");
+    if (ensoOutput !== scripterOutput || ensoInput !== scripterInput) {
+        throw new Error("Enso and Scripter fork simulations have different balance deltas");
+    }
+    if (scripterOutput < uint256(minOutput, "simulation.minOutput")) throw new Error("Scripter simulation output is below minOutput");
+    if (scripterInput > uint256(maxInput, "simulation.maxInput")) throw new Error("Scripter simulation input is above maxInput");
+    return {inputDelta: scripterInput, outputDelta: scripterOutput};
 }

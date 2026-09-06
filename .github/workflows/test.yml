@@ -60,6 +60,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       ETH_RPC_URL: ${{ secrets.ETH_RPC_URL }}
+      # Optional. When configured, rehearse.sh runs the versioned live Enso route matrix.
+      ENSO_API_KEY: ${{ secrets.ENSO_API_KEY }}
       FORK_BLOCK: ${{ inputs.fork_block }}
     steps:
       - uses: actions/checkout@v4

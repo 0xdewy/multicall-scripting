@@ -57,7 +57,9 @@ echo '[2/5] Running protocol and EIP-7702 rehearsal'
 bun js/test/mainnet.js "$FORK_LOCAL"
 echo '[3/5] Comparing Enso Weiroll and Scripter on the same command plan'
 bun js/test/enso-differential.js "$FORK_LOCAL"
-if [[ -n "${ENSO_API_KEY:-}" ]]; then
+if [[ "${SKIP_ENSO_LIVE:-}" == 1 ]]; then
+  echo '[4/5] SKIP Enso live route (SKIP_ENSO_LIVE=1)'
+elif [[ -n "${ENSO_API_KEY:-}" ]]; then
   echo '[4/5] Translating live Enso routes and comparing executors'
   bun js/test/enso-mainnet.js "$FORK_LOCAL"
 elif [[ -f .env ]]; then
