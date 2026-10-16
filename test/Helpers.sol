@@ -337,4 +337,25 @@ contract Layouts {
     function pairsLength() external view returns (uint256) {
         return pairs.length;
     }
+
+    // a fixed array that is not the only output
+    function getCountAndFixed() external pure returns (uint256, uint256[2] memory) {
+        return (2, [uint256(11), uint256(22)]);
+    }
+
+    uint256[2] public fixedPair;
+    uint256 public copiedSum;
+
+    function setFixed(uint256[2] calldata a) external {
+        fixedPair = a;
+    }
+
+    // receives a struct array copied whole, field by field in order
+    function sumPairs(Static[] calldata p) external {
+        uint256 sum;
+        for (uint256 i = 0; i < p.length; i++) {
+            sum = sum * 100 + p[i].nA * 10 + p[i].nB;
+        }
+        copiedSum = sum;
+    }
 }

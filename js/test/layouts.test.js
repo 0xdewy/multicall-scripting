@@ -25,7 +25,19 @@ const ABI = [
     fn("setBytes", [{ name: "b", type: "bytes" }], [], "nonpayable"),
 ];
 
-const first = (b) => decodePartialReturn(b.build().offsets[0]);
+// Slices of an offset word in either layout. A regular word (0xFF / 0xFE) is one slice from
+// return-data offset 0, which the builder emits when the slices merge into exactly that.
+function slices(word) {
+    const w = BigInt(word);
+    const flag = Number(w >> 248n);
+    if (flag !== 0xFF && flag !== 0xFE) return decodePartialReturn(word);
+    const mask = (1n << 120n) - 1n;
+    const size = Number(w & mask);
+    return size === 0
+        ? { memTargets: [], resultLengths: [], returnOffsets: [], returnDataSize: 0 }
+        : { memTargets: [Number((w >> 120n) & mask)], resultLengths: [size], returnOffsets: [0], returnDataSize: size };
+}
+const first = (b) => slices(b.build().offsets[0]);
 
 describe("return-data offsets", () => {
     test("field of a dynamic tuple output sits behind the pointer word", () => {
@@ -99,9 +111,9 @@ describe("calldata targets", () => {
         b.addCall(ABI, T, "setStaticThenWord", [{ nA: 1n, nB: w2 }, w]);
         const out = b.build();
         // call 1 (w2) → nB at 4 + 32 = 36 in the next call
-        expect(decodePartialReturn(out.offsets[1]).memTargets).toEqual([36]);
+        expect(slices(out.offsets[1]).memTargets).toEqual([36]);
         // call 0 (w) → w at 4 + 64 = 68, plus the 36 + 64 = 100... call 1's region (32 + pad32(4)) = 64 bytes
-        expect(decodePartialReturn(out.offsets[0]).memTargets).toEqual([64 + 68]);
+        expect(slices(out.offsets[0]).memTargets).toEqual([64 + 68]);
     });
 
     test("descriptor inside an array argument of a multi-parameter function", () => {
@@ -207,8 +219,52 @@ describe("validation", () => {
         const b = new TransactionBuilder();
         const pairs = b.addCall(ABI, T, "getPairs", []);
         pairs.with_length(2);
+        // swapped fields: four slices, none contiguous with another, rejected when added
+        const crossed = [[{ nA: pairs[0].nB, nB: pairs[0].nA }, { nA: pairs[1].nB, nB: pairs[1].nA }]];
+        expect(() => b.addCall(ABI, T, "setPairs", crossed)).toThrow("Too many variables");
+        expect(b.calls).toHaveLength(1);
+        expect(() => b.build()).not.toThrow();
+    });
+
+    test("contiguous slices merge into one copy", () => {
+        const b = new TransactionBuilder();
+        const pairs = b.addCall(ABI, T, "getPairs", []);
+        pairs.with_length(2);
+        // four fields in order: one 128-byte slice
         b.addCall(ABI, T, "setPairs", [[{ nA: pairs[0].nA, nB: pairs[0].nB }, { nA: pairs[1].nA, nB: pairs[1].nB }]]);
-        expect(() => b.build()).toThrow("Too many variables");
+        const s = first(b);
+        expect(s.resultLengths).toEqual([128]);
+        expect(s.returnOffsets).toEqual([64]);
+    });
+
+    test("one slice from return-data offset 0 uses the regular layout", () => {
+        const b = new TransactionBuilder();
+        const w = b.addCall(ABI, T, "getWord", []);
+        b.addCall(ABI, T, "setWord", [w]);
+        const word = BigInt(b.build().offsets[0]);
+        expect(decodeCalltype(word)).toBe(Number(STATIC_CALL_FLAG));
+        expect(word & ((1n << 120n) - 1n)).toBe(32n); // returnSize
+        expect((word >> 120n) & ((1n << 120n) - 1n)).toBe(4n); // memTarget
+    });
+
+    test("a fixed-array output that is not the only output can be passed as an array", () => {
+        const abi = [fn("getMixed", [], [u("a"), { name: "arr", type: "uint256[2]" }]), fn("setArr", [{ name: "x", type: "uint256[2]" }], [], "nonpayable")];
+        const b = new TransactionBuilder();
+        const [, arr] = b.addCall(abi, T, "getMixed", []);
+        expect(Array.isArray(arr)).toBe(true);
+        b.addCall(abi, T, "setArr", [arr]);
+        const s = first(b);
+        expect(s.returnOffsets).toEqual([32]);
+        expect(s.resultLengths).toEqual([64]);
+        expect(s.memTargets).toEqual([4]);
+    });
+
+    test("too many calls with msg.value are rejected when added", () => {
+        const b = new TransactionBuilder();
+        for (let i = 0; i < 255; i++) b.addCall(ABI, T, "setWord", [1n], 1n);
+        expect(() => b.addCall(ABI, T, "setWord", [1n], 1n)).toThrow("msgValueIndex too large");
+        b.addCall(ABI, T, "setWord", [1n]); // no value: still fine
+        expect(b.build().msgValues).toHaveLength(255);
     });
 
     test("calltype follows state mutability", () => {

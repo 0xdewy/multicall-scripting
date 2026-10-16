@@ -39,8 +39,6 @@ pub enum BuildError {
     TypeMismatch { from: String, to: String },
     #[error("call #{call}: too many variables ({count}) from one call")]
     TooManyVars { call: usize, count: usize },
-    #[error("call #{call} variable {var}: return data slice exceeds returnDataSize")]
-    SliceExceedsReturnData { call: usize, var: usize },
     #[error("unsupported: {0}")]
     Unsupported(String),
     #[error("type resolution failed: {0}")]
@@ -111,7 +109,7 @@ impl ReturnRef {
                 .and_then(|n| n.checked_add(32)),
         };
         match size {
-            Some(size) if size <= u16::MAX as u64 => self.size = size,
+            Some(size) if self.offset + size <= u16::MAX as u64 => self.size = size,
             _ => {
                 self.unsupported = Some("returnDataSize is too large".into());
                 return self;
@@ -136,8 +134,89 @@ struct Call {
     mem_targets: Vec<u64>,
     result_lengths: Vec<u64>,
     return_offsets: Vec<u64>,
-    return_data_size: u64,
     msg_value: U256,
+}
+
+/// One return-data copy: `size` bytes from return-data `offset` to `mem_target`.
+#[derive(Clone, Copy)]
+struct Slice {
+    mem_target: u64,
+    size: u64,
+    offset: u64,
+}
+
+impl Call {
+    /// Return-data slices, with slices contiguous in both the return data and the destination
+    /// merged into one copy (e.g. a struct or fixed array passed whole). Mirrors `mergeSlices`.
+    fn merged_slices(&self) -> Vec<Slice> {
+        let mut slices: Vec<Slice> = (0..self.mem_targets.len())
+            .map(|j| Slice {
+                mem_target: self.mem_targets[j],
+                size: self.result_lengths[j],
+                offset: self.return_offsets[j],
+            })
+            .collect();
+        slices.sort_by_key(|s| (s.offset, s.mem_target));
+        let mut merged: Vec<Slice> = Vec::with_capacity(slices.len());
+        for s in slices {
+            match merged.last_mut() {
+                Some(last)
+                    if last.offset + last.size == s.offset
+                        && last.mem_target + last.size == s.mem_target =>
+                {
+                    last.size += s.size
+                }
+                _ => merged.push(s),
+            }
+        }
+        merged
+    }
+
+    /// The offset word for this call (call #`index`). Mirrors `encodeOffset`.
+    fn encode_offset(&self, index: usize, msg_value_index: u64) -> Result<U256, BuildError> {
+        let is_static = self.calltype_flag == codec::STATIC_CALL_FLAG;
+        let slices = self.merged_slices();
+        if slices.is_empty() {
+            return Ok(if is_static {
+                codec::static_call(U256::ZERO, U256::ZERO)?
+            } else {
+                codec::state_changing_call(msg_value_index)?
+            });
+        }
+        // One slice from the start of the return data: the regular layout has the call write it
+        // in place (cheaper than a partial copy, and not limited to 64 KiB).
+        if let [only] = slices.as_slice() {
+            if only.offset == 0 {
+                let (target, size) = (U256::from(only.mem_target), U256::from(only.size));
+                return Ok(if is_static {
+                    codec::static_call(target, size)?
+                } else {
+                    codec::state_changing_call_with_return(msg_value_index, target, size)?
+                });
+            }
+        }
+        if slices.len() > codec::PARTIAL_RETURN_VARS as usize {
+            return Err(BuildError::TooManyVars {
+                call: index,
+                count: slices.len(),
+            });
+        }
+        let mem_targets: Vec<u64> = slices.iter().map(|s| s.mem_target).collect();
+        let lengths: Vec<u64> = slices.iter().map(|s| s.size).collect();
+        let offsets: Vec<u64> = slices.iter().map(|s| s.offset).collect();
+        let return_data_size = slices.iter().map(|s| s.offset + s.size).max().unwrap_or(0);
+        Ok(if is_static {
+            codec::static_call_partial_return(&mem_targets, &lengths, &offsets, return_data_size)?
+        } else {
+            codec::call_partial_return(
+                msg_value_index,
+                &mem_targets,
+                &lengths,
+                &offsets,
+                return_data_size,
+            )?
+        })
+    }
 }
 
 #[derive(Debug, Default)]
@@ -246,6 +325,7 @@ impl TransactionBuilder {
 
         // the executor resolves memTargets relative to the calldata of the call *after* the
         // producer, so add the size of every call in between
+        let mut patches: Vec<(usize, Slice)> = Vec::new();
         let mut head_pos = 4u64;
         for (arg, ty) in args.iter().zip(&input_types) {
             if let Arg::Ref(r) = arg {
@@ -258,13 +338,57 @@ impl TransactionBuilder {
                     .iter()
                     .map(|c| region_size(&c.fn_calldata))
                     .sum();
-                let producing = &mut self.calls[r.call_index];
-                producing.mem_targets.push(distance + pos);
-                producing.result_lengths.push(r.size);
-                producing.return_offsets.push(r.offset);
-                producing.return_data_size = producing.return_data_size.max(r.offset + r.size);
+                patches.push((
+                    r.call_index,
+                    Slice {
+                        mem_target: distance + pos,
+                        size: r.size,
+                        offset: r.offset,
+                    },
+                ));
             }
             head_pos += head_size(ty);
+        }
+
+        // Check every producer can still encode its slices before recording anything, so a
+        // rejected call leaves the builder usable.
+        let mut producers: Vec<usize> = patches.iter().map(|(i, _)| *i).collect();
+        producers.sort_unstable();
+        producers.dedup();
+        for index in producers {
+            let p = &self.calls[index];
+            let mut trial = Call {
+                target: p.target,
+                fn_calldata: Bytes::new(),
+                calltype_flag: p.calltype_flag,
+                mem_targets: p.mem_targets.clone(),
+                result_lengths: p.result_lengths.clone(),
+                return_offsets: p.return_offsets.clone(),
+                msg_value: p.msg_value,
+            };
+            for (_, s) in patches.iter().filter(|(i, _)| *i == index) {
+                trial.mem_targets.push(s.mem_target);
+                trial.result_lengths.push(s.size);
+                trial.return_offsets.push(s.offset);
+            }
+            trial.encode_offset(index, 0)?;
+        }
+        // each call with msg.value takes one `values` entry; the index field is 8 bits
+        if msg_value > U256::ZERO
+            && self
+                .calls
+                .iter()
+                .filter(|c| c.msg_value > U256::ZERO)
+                .count()
+                >= 0xFF
+        {
+            return Err(BuildError::Codec(codec::CodecError::MsgValueIndexTooLarge));
+        }
+        for (index, s) in patches {
+            let producing = &mut self.calls[index];
+            producing.mem_targets.push(s.mem_target);
+            producing.result_lengths.push(s.size);
+            producing.return_offsets.push(s.offset);
         }
 
         self.calls.push(Call {
@@ -278,7 +402,6 @@ impl TransactionBuilder {
             mem_targets: Vec::new(),
             result_lengths: Vec::new(),
             return_offsets: Vec::new(),
-            return_data_size: 0,
             msg_value,
         });
 
@@ -361,50 +484,12 @@ impl TransactionBuilder {
             packed.extend_from_slice(&call.fn_calldata);
             packed.resize(packed.len().div_ceil(32) * 32, 0);
 
-            if call.mem_targets.len() > codec::PARTIAL_RETURN_VARS as usize {
-                return Err(BuildError::TooManyVars {
-                    call: call_index,
-                    count: call.mem_targets.len(),
-                });
+            let mut msg_value_index = 0;
+            if call.msg_value > U256::ZERO {
+                out.msg_values.push(call.msg_value);
+                msg_value_index = out.msg_values.len() as u64;
             }
-            for j in 0..call.return_offsets.len() {
-                if call.return_offsets[j] + call.result_lengths[j] > call.return_data_size {
-                    return Err(BuildError::SliceExceedsReturnData {
-                        call: call_index,
-                        var: j,
-                    });
-                }
-            }
-
-            let offset = if call.calltype_flag == codec::STATIC_CALL_FLAG {
-                if call.mem_targets.is_empty() {
-                    codec::static_call(U256::ZERO, U256::ZERO)?
-                } else {
-                    codec::static_call_partial_return(
-                        &call.mem_targets,
-                        &call.result_lengths,
-                        &call.return_offsets,
-                        call.return_data_size,
-                    )?
-                }
-            } else {
-                let mut msg_value_index = 0;
-                if call.msg_value > U256::ZERO {
-                    out.msg_values.push(call.msg_value);
-                    msg_value_index = out.msg_values.len() as u64;
-                }
-                if call.mem_targets.is_empty() {
-                    codec::state_changing_call(msg_value_index)?
-                } else {
-                    codec::call_partial_return(
-                        msg_value_index,
-                        &call.mem_targets,
-                        &call.result_lengths,
-                        &call.return_offsets,
-                        call.return_data_size,
-                    )?
-                }
-            };
+            let offset = call.encode_offset(call_index, msg_value_index)?;
 
             out.offsets.push(offset);
         }

@@ -64,13 +64,13 @@ fn scalar_chaining_offsets_match_codec() {
 
     assert_eq!(
         out.offsets[0],
-        codec::static_call_partial_return(&[36], &[32], &[0], 32).unwrap(),
-        "call0 splices its return into call1 arg index 1"
+        codec::static_call(U256::from(36), U256::from(32)).unwrap(),
+        "call0 writes its whole return value into call1 arg index 1 (regular layout)"
     );
     assert_eq!(
         out.offsets[1],
-        codec::static_call_partial_return(&[4], &[32], &[0], 32).unwrap(),
-        "call1 splices its return into call2 arg index 0"
+        codec::static_call(U256::from(4), U256::from(32)).unwrap(),
+        "call1 writes its return value into call2 arg index 0"
     );
     assert_eq!(
         out.offsets[2],
@@ -156,21 +156,46 @@ fn rejects_more_than_three_vars() {
     let r = b
         .add_call(get_four, Address::ZERO, vec![], U256::ZERO)
         .unwrap();
-    // chaining all 4 returns into one consumer => producing call has 4 vars (> PARTIAL_RETURN_VARS)
-    b.add_call(
-        set_four,
-        Address::ZERO,
-        vec![
-            Arg::Ref(r[0].clone()),
-            Arg::Ref(r[1].clone()),
-            Arg::Ref(r[2].clone()),
-            Arg::Ref(r[3].clone()),
-        ],
-        U256::ZERO,
-    )
-    .unwrap();
-    let err = b.build().unwrap_err();
+    // in order, the four returns are contiguous in source and destination: one merged copy
+    let mut ordered = TransactionBuilder::new();
+    let o = ordered
+        .add_call(get_four, Address::ZERO, vec![], U256::ZERO)
+        .unwrap();
+    ordered
+        .add_call(
+            set_four,
+            Address::ZERO,
+            vec![
+                Arg::Ref(o[0].clone()),
+                Arg::Ref(o[1].clone()),
+                Arg::Ref(o[2].clone()),
+                Arg::Ref(o[3].clone()),
+            ],
+            U256::ZERO,
+        )
+        .unwrap();
+    assert_eq!(
+        ordered.build().unwrap().offsets[0],
+        codec::static_call(U256::from(4), U256::from(128)).unwrap()
+    );
+
+    // reversed, no two are contiguous => 4 vars (> PARTIAL_RETURN_VARS), rejected when added
+    let err = b
+        .add_call(
+            set_four,
+            Address::ZERO,
+            vec![
+                Arg::Ref(r[3].clone()),
+                Arg::Ref(r[2].clone()),
+                Arg::Ref(r[1].clone()),
+                Arg::Ref(r[0].clone()),
+            ],
+            U256::ZERO,
+        )
+        .unwrap_err();
     assert!(format!("{err}").contains("too many variables"));
+    // the builder is still usable
+    assert_eq!(b.build().unwrap().offsets.len(), 1);
 }
 
 #[test]

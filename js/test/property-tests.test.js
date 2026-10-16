@@ -61,7 +61,19 @@ function checkSeed(seed) {
         const actualHex = "0x" + input.toString("hex");
         expect(decodeFunctionData({abi: ABI, data: actualHex}).args).toEqual(call.expectedArgs);
         expect(actualHex).toBe(encodeFunctionData({abi: ABI, functionName: call.fn.name, args: call.expectedArgs}));
-        if ((built.offsets[i] >> 248n) !== 0xFCn) return;
+        const flag = built.offsets[i] >> 248n;
+        if (flag === 0xFFn || flag === 0xFEn) {
+            // regular layout: returnSize bytes from return-data offset 0 to memTarget
+            const mask = (1n << 120n) - 1n;
+            const size = Number(built.offsets[i] & mask);
+            if (size === 0) return;
+            const target = starts[i + 1] + 32 + Number((built.offsets[i] >> 120n) & mask);
+            expect(size).toBeLessThanOrEqual(call.result.length);
+            expect(target + size).toBeLessThanOrEqual(region.length);
+            call.result.copy(region, target, 0, size);
+            return;
+        }
+        if (flag !== 0xFCn) return;
         const d = decodePartialReturn(built.offsets[i]);
         expect(d.numVars).toBeLessThanOrEqual(3);
         expect(d.returnDataSize).toBeLessThanOrEqual(call.result.length);

@@ -99,7 +99,11 @@ The declaration is a caller precondition, not a runtime length check.
   `transferFrom` against you. Fund a batch with `msg.value`, with tokens transferred *inside* the
   batch, or run it from your own address through the EIP-7702 delegate.
 - **At most 3 return-value slices per producing call.** The offset word has room for three
-  (target, length, source) triples. Read the same value twice with two calls if you need more.
+  (target, length, source) triples. Slices that are contiguous in both the return data and the
+  destination (a struct or fixed array passed whole, or fields passed in order) are merged into
+  one, and a single slice starting at return-data offset 0 uses the cheaper regular layout with no
+  size limit. `addCall` rejects a reference that would exceed the limit, leaving the builder usable;
+  read the same value again with another call if you need more.
 - **Descriptors belong to one builder.** Generated references from another builder are rejected. Raw CLI references remain explicit byte positions.
 - **Descriptors can be reused.** One result may feed multiple arguments or later calls, within the three-slice limit.
 - **`with_length(n)` is an exact precondition, not a runtime check or safe truncation.** The original length word is copied too. A wrong length can revert or make the consumer read adjacent arguments. Use only canonical ABI returns with known exact lengths.
@@ -209,7 +213,20 @@ reverts; `values` is ignored. It shares the executor's errors except `InvalidVal
 - `execute(...)` — callable only by the account itself (send the transaction to your own address).
 - `executeWithSignature(targets, offsets, calldatas, values, deadline, signature)` — callable by
   anyone with an EIP-712 signature from the account over the whole batch, a nonce and a deadline.
-  `hashExecute(...)` returns the digest to sign; `nonce()` the next nonce.
+  `hashExecute(...)` returns the digest to sign; `nonce()` the next nonce. 65-byte and EIP-2098
+  64-byte signatures are accepted.
+- `invalidateNonces(newNonce)` — callable only by the account itself; moves the nonce forward,
+  cancelling every unused signature below `newNonce`, including future-nonce ones.
+
+Delegation gives the EOA code, and many protocols then treat it as a contract. So that it keeps
+working with them, the delegate also implements:
+
+- ERC-1271 `isValidSignature(hash, signature)` — valid exactly when the account's own key signed
+  `hash`, the same signatures an undelegated EOA passes with `ecrecover`. Permit2, Seaport and
+  similar verify accounts with code this way; without it the owner's off-chain signatures fail.
+- ERC-721 / ERC-1155 receiver hooks (`onERC721Received`, `onERC1155Received`,
+  `onERC1155BatchReceived`, handled in `fallback`) and ERC-165 `supportsInterface`, so safe
+  transfers to the account do not revert.
 
 The domain is `{ name: "MulticallScripter7702", version: "3", chainId, verifyingContract: <EOA> }`
 and the type is `Execute(bytes32 batchHash,uint256 nonce,uint256 deadline)` with
@@ -221,9 +238,9 @@ Version 3 rejects signatures from the earlier slot-zero implementation; regenera
 
 Delegation changes preserve account storage. Removing delegation does **not** cancel unused batch
 signatures: they can work again after restoration if their nonce and deadline are still valid.
-To cancel signatures for the current nonce, sign and execute an empty batch with that nonce;
-signatures for future nonces require separate invalidation or expiry. An ordinary self-call does
-not advance the signature nonce. A competing relayer can race cancellation until it is confirmed.
+To cancel signatures, call `invalidateNonces` from the account (or sign and execute an empty batch
+with the current nonce). An ordinary self-call does not advance the signature nonce. A competing
+relayer can race cancellation until it is confirmed.
 A failed authorization transaction can still install delegation: the protocol authorization is
 processed separately from EVM execution rollback. The rehearsal tests these lifecycle cases.
 Only migrate to code whose storage and signature behavior you have reviewed; namespacing prevents

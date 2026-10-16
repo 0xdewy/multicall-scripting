@@ -284,6 +284,46 @@ contract SevenSevenZeroTwoCallerTest is Test, CallBuilder {
         assertEq(account.nonce(), 1);
     }
 
+    function test_invalidateNonces_cancels_current_and_future_signatures() public {
+        uint256 deadline = block.timestamp + 100;
+        bytes memory current = _sign(EOA_KEY, 0, deadline);
+        bytes memory future = _sign(EOA_KEY, 4, deadline);
+        vm.prank(eoa);
+        account.invalidateNonces(5);
+        assertEq(account.nonce(), 5);
+        vm.expectRevert(SevenSevenZeroTwoCaller.InvalidSignature.selector);
+        account.executeWithSignature(targets, offsets, pack(calldatas), values, deadline, current);
+        vm.expectRevert(SevenSevenZeroTwoCaller.InvalidSignature.selector);
+        account.executeWithSignature(targets, offsets, pack(calldatas), values, deadline, future);
+        account.executeWithSignature(targets, offsets, pack(calldatas), values, deadline, _sign(EOA_KEY, 5, deadline));
+        assertEq(account.nonce(), 6);
+        assertEq(target.value(), 42);
+    }
+
+    function test_invalidateNonces_is_self_only_and_forward_only() public {
+        vm.prank(relayer);
+        vm.expectRevert(SevenSevenZeroTwoCaller.Unauthorized.selector);
+        account.invalidateNonces(1);
+        vm.prank(eoa);
+        vm.expectRevert(SevenSevenZeroTwoCaller.InvalidNonce.selector);
+        account.invalidateNonces(0);
+        vm.prank(eoa);
+        account.invalidateNonces(3);
+        vm.prank(eoa);
+        vm.expectRevert(SevenSevenZeroTwoCaller.InvalidNonce.selector);
+        account.invalidateNonces(3);
+    }
+
+    function test_compact_signature_executes_batch() public {
+        uint256 deadline = block.timestamp + 100;
+        bytes32 digest = account.hashExecute(targets, offsets, pack(calldatas), values, 0, deadline);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(EOA_KEY, digest);
+        bytes32 vs = bytes32(uint256(s) | (uint256(v - 27) << 255));
+        account.executeWithSignature(targets, offsets, pack(calldatas), values, deadline, abi.encodePacked(r, vs));
+        assertEq(account.nonce(), 1);
+        assertEq(target.value(), 42);
+    }
+
     function test_deadline_is_inclusive_but_cannot_be_extended() public {
         uint256 deadline = block.timestamp + 100;
         bytes memory sig = _sign(EOA_KEY, 0, deadline);

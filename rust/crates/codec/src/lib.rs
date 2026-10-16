@@ -71,6 +71,22 @@ pub fn state_changing_call(msg_value_index: u64) -> Result<U256, CodecError> {
         | (U256::from(msg_value_index) << 240usize))
 }
 
+/// Mirrors `stateChangingCall(msgValueIndex, memTarget, resultLength)`: a state-changing call
+/// whose first `result_length` bytes of return data are written to `mem_target`.
+pub fn state_changing_call_with_return(
+    msg_value_index: u64,
+    mem_target: U256,
+    result_length: U256,
+) -> Result<U256, CodecError> {
+    if mem_target > uint120_max() {
+        return Err(CodecError::MemTargetTooLarge);
+    }
+    if result_length > uint120_max() {
+        return Err(CodecError::ResultLengthTooLarge);
+    }
+    Ok(state_changing_call(msg_value_index)? | (mem_target << 120usize) | result_length)
+}
+
 /// Mirrors `staticCallPartialReturn(memTargets, resultLengths, returnOffsets, returnDataSize)`.
 pub fn static_call_partial_return(
     mem_targets: &[u64],

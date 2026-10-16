@@ -115,6 +115,9 @@ contract JsLibrary is Test, CallBuilder {
         assertEq(b1, 1, "pairs[0].nA spliced into a struct inside an array");
         assertEq(layouts.text(), unicode"héllo ✓");
         assertEq(layouts.text2(), "seven", "dynamic tuple field spliced after a non-ASCII literal");
+        assertEq(layouts.copiedSum(), 1234, "four in-order fields merged into one copy");
+        assertEq(layouts.fixedPair(0), 11, "fixed-array output passed whole");
+        assertEq(layouts.fixedPair(1), 22);
     }
 
     function test_js_complex_structs() public {

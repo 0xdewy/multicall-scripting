@@ -1,7 +1,8 @@
 // FFI script for test/JsLibrary.t.sol:test_js_layouts. Builds one batch that exercises every
 // calldata/return-data layout the builder positions: descriptors inside struct and array arguments,
 // static tuple parameters before a descriptor, dynamic tuple outputs, dynamic arrays as a
-// non-first output, arrays of structs, and non-ASCII string literals next to a dynamic descriptor.
+// non-first output, arrays of structs, non-ASCII string literals next to a dynamic descriptor,
+// merged contiguous slices and a fixed-array output that is not the only output.
 import { TransactionBuilder } from "../index.js";
 import { loadABI } from "./common.js";
 
@@ -36,6 +37,16 @@ b.addCall(abi, target, "setTexts", ["héllo ✓", item.name]);
 // 6. Reuse one return value twice in a single consumer and once in a later consumer.
 const repeated = b.addCall(abi, target, "getWord", []);
 b.addCall(abi, target, "setStaticThenWord", [{ nA: repeated, nB: repeated }, repeated]);
+
+// 7. Fields passed in order are contiguous in source and destination: the four slices merge into
+//    one copy (four would exceed the three-slice limit). sumPairs([(1,2),(3,4)]) -> 1234
+const pairs2 = b.addCall(abi, target, "getPairs", []);
+pairs2.with_length(2);
+b.addCall(abi, target, "sumPairs", [[{ nA: pairs2[0].nA, nB: pairs2[0].nB }, { nA: pairs2[1].nA, nB: pairs2[1].nB }]]);
+
+// 8. A fixed array that is not the only output, passed whole: setFixed([11, 22])
+const [, fixed] = b.addCall(abi, target, "getCountAndFixed", []);
+b.addCall(abi, target, "setFixed", [fixed]);
 
 const out = b.build();
 console.log(JSON.stringify({

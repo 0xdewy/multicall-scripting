@@ -122,7 +122,7 @@ contract MulticallScripter is Constants {
                 if idx {
                     if gt(idx, calldataload(sub(mload(0x20), 0x20))) { fail(0x3b1a9b29)} // InvalidValueIndex()
                     value := calldataload(add(mload(0x20), shl(5, sub(idx, 1))))
-                    mstore(0x60, add(mload(0x60), value))
+                    mstore(0x00, add(mload(0x00), value))
                 }
             }
 
@@ -158,12 +158,12 @@ contract MulticallScripter is Constants {
             calldatacopy(ptr, calldatas.offset, calldatas.length)
             mstore(0x40, regionEnd)
 
-            // The value table is cold-path metadata. Scratch slots avoid keeping it live on
-            // the stack across every static call; callees have their own EVM memory.
+            // The value table and the running ETH total are cold-path metadata. The two scratch
+            // words hold them so they are not live on the stack across every static call; callees
+            // have their own EVM memory, and the only other scratch writers revert immediately.
             let targetDelta := sub(targets.offset, offsets.offset)
             mstore(0x20, values.offset)
-            // Temporarily use the zero slot for spent ETH; restore it before returning to Solidity.
-            mstore(0x60, 0)
+            mstore(0x00, 0) // ETH sent so far
 
             // ---- 2. Run the calls
             let offsetsEnd := add(offsets.offset, shl(5, offsets.length))
@@ -208,13 +208,15 @@ contract MulticallScripter is Constants {
             // The frame count must exactly match the target/offset count.
             if iszero(eq(ptr, mload(0x40))) { fail(0xff633a38) } // LengthMismatch()
 
-            // ---- 3. Refund unspent msg.value so nothing is left for the next caller to sweep
-            if gt(callvalue(), mload(0x60)) {
-                if iszero(call(gas(), caller(), sub(callvalue(), mload(0x60)), 0x00, 0x00, 0x00, 0x00)) {
-                    fail(0xf0c49d44) // RefundFailed()
+            // ---- 3. Refund unspent msg.value so nothing is left for the next caller to sweep.
+            // A 7702 account calling itself already holds that ETH, so skip the self-transfer.
+            if gt(callvalue(), mload(0x00)) {
+                if iszero(eq(caller(), address())) {
+                    if iszero(call(gas(), caller(), sub(callvalue(), mload(0x00)), 0x00, 0x00, 0x00, 0x00)) {
+                        fail(0xf0c49d44) // RefundFailed()
+                    }
                 }
             }
-            mstore(0x60, 0)
         }
     }
 }

@@ -89,8 +89,8 @@ Build: the optimizer was off; it is now on (via-IR), and the compilation target 
   Domain version 3 rejects old slot-zero signatures. An arbitrary delegate can still deliberately
   overwrite this namespace; storage-safe migration is a caller responsibility. Removing delegation
   preserves storage and does not invalidate unused signatures after restoration. An empty signed
-  batch consumes the current nonce; ordinary self-calls do not. Future-nonce signatures need
-  separate invalidation or expiry, and pending cancellations can be raced. Protocol authorization
+  batch consumes the current nonce; ordinary self-calls do not. `invalidateNonces` (account only)
+  skips the nonce forward and cancels future-nonce signatures too; pending cancellations can be raced. Protocol authorization
   survives a reverted execution transaction. These rules follow [EIP-7702](https://eips.ethereum.org/EIPS/eip-7702)
   and are exercised with actual Anvil authorization transactions, not just etched runtime code.
 - **Callee behaviour is the caller's responsibility.** Nested execution has separate EVM memory,
@@ -222,6 +222,21 @@ MulticallScripter: 0xaae6b023e1b63db280bf39a5caf8393a7c5c641f22deea06f3d617ec92c
 MulticallScripterReadOnly: 0xc69d894479aeddc65682897328b79041d583c41ca6477a52b1b26a89225e6940
 SevenSevenZeroTwoCaller: 0x3b4eb5a03f2bbcdf18d564848190b265dd59d8411f5431e7beaabbcfa60ff665
 ```
+
+**Superseded build — the rehearsal above has not been re-run.** A later change set (ERC-1271 and
+token-receiver support plus `invalidateNonces` on the delegate; scratch-space ETH accounting and
+self-refund skipping in the executor) changes all three runtimes. Same compiler settings:
+
+```text
+MulticallScripter: 0x725350d449c04afde8eb3b15c68e6c492b1eb794b6f18f8edc42219b82a61d9e
+MulticallScripterReadOnly: 0x7696fbbf3b981deb198cffe5cdea36c78d2432c7431bb2b5712ee840f1f2753b
+SevenSevenZeroTwoCaller: 0xae6a00e496f77ba0b49229bce1c8bdbba220230bd017bc6dc22ae992ce5f7663
+```
+
+Predicted CREATE2 addresses (computed, not yet checked on a fork): `MulticallScripter`
+`0x08Dfb35ad5BFB9D2600799997Fb66B26e730dD2a`, `MulticallScripterReadOnly`
+`0xe53302d56Ec35bd9eeE1d8cA4aAf2a2773fA72cD`, `SevenSevenZeroTwoCaller`
+`0x9a8e8798d639c7A2d64e801C2c800a300bEa1689`. Run `bash script/rehearse.sh` before relying on them.
 
 ### Compiler review and remaining release work
 

@@ -137,7 +137,7 @@ export class Descriptor {
         if (!this.isDynamic) throw new Error(`${this.type} is static; with_length() is only for bytes, string and T[] return values`);
         if (!Number.isSafeInteger(n) || n < 0) throw new Error(`${this.type} length must be a non-negative integer`);
         const size = this.elementParam ? WORD + n * staticSize(this.elementParam) : WORD + pad32(n);
-        if (size > 0xFFFF) throw new Error("returnDataSize is too large");
+        if (this.offset + size > 0xFFFF) throw new Error("returnDataSize is too large");
         this.length = n;
         this.requiresLength = false;
         this.size = size;
@@ -212,7 +212,8 @@ function outputValue(callIndex, param, pos, unsupported) {
     if (param.type === "bytes" || param.type === "string") {
         return leaf(callIndex, param, pos, { isDynamic: true, requiresLength: true, length: null, unsupported });
     }
-    if (arr || param.type === "tuple") {
+    if (arr) return layoutTuple(callIndex, staticChildren(param), pos, unsupported);
+    if (param.type === "tuple") {
         const children = staticChildren(param);
         return structObject(children, layoutTuple(callIndex, children, pos, unsupported));
     }
@@ -269,6 +270,47 @@ function prepare(value, param) {
 
 // =============================== Builder ===============================
 
+// A producer's return-data slices, with slices that are contiguous in both the return data and
+// the destination merged into one copy (e.g. a struct or fixed array passed whole).
+function mergeSlices(call) {
+    const slices = call.memTargets
+        .map((memTarget, j) => ({ memTarget, size: call.resultLengths[j], offset: call.returnOffsets[j] }))
+        .sort((a, b) => a.offset - b.offset || a.memTarget - b.memTarget);
+    const merged = [];
+    for (const slice of slices) {
+        const last = merged[merged.length - 1];
+        if (last && last.offset + last.size === slice.offset && last.memTarget + last.size === slice.memTarget) {
+            last.size += slice.size;
+        } else {
+            merged.push({ ...slice });
+        }
+    }
+    return merged;
+}
+
+// Offset word for call #i. Throws if its return-data slices cannot be encoded.
+function encodeOffset(call, i, msgValueIndex) {
+    const isStatic = Number(call.calltype_flag) === Number(STATIC_CALL_FLAG);
+    if (!isStatic && Number(call.calltype_flag) !== Number(CALL_FLAG)) {
+        throw new Error(`Call #${i}: Invalid calltype flag: ${call.calltype_flag}`);
+    }
+    const slices = mergeSlices(call);
+    if (slices.length === 0) return isStatic ? staticCall(0, 0) : stateChangingCall(msgValueIndex);
+    // One slice from the start of the return data: the regular layout has the call write it in
+    // place (cheaper than a partial copy, and not limited to 64 KiB).
+    if (slices.length === 1 && slices[0].offset === 0) {
+        const { memTarget, size } = slices[0];
+        return isStatic ? staticCall(memTarget, size) : stateChangingCall(msgValueIndex, memTarget, size);
+    }
+    if (slices.length > PARTIAL_RETURN_VARS) {
+        throw new Error(`Call #${i}: Too many variables (${slices.length}) from one call; at most ${PARTIAL_RETURN_VARS} return-value slices can be used per call`);
+    }
+    const returnDataSize = Math.max(...slices.map(({ offset, size }) => offset + size));
+    const fields = [slices.map((x) => x.memTarget), slices.map((x) => x.size), slices.map((x) => x.offset), returnDataSize];
+    return isStatic ? staticCallPartialReturn(...fields) : callPartialReturn(msgValueIndex, ...fields);
+}
+
+
 export class TransactionBuilder {
     constructor() {
         this.calls = [];
@@ -319,12 +361,26 @@ export class TransactionBuilder {
             target: this.calls.slice(descriptor.callIndex + 1).reduce((n, c) => n + regionSize(c.fnCalldata), 0)
                 + locate(fn.inputs, SELECTOR_SIZE, path, fnCalldata),
         }));
+        // Check every producer can still encode its slices, so the builder never gets stuck.
+        const trial = new Map(); // producer call index → producer with the new slices added
+        for (const { descriptor, target: memTarget } of patches) {
+            const producer = this.calls[descriptor.callIndex];
+            const t = trial.get(descriptor.callIndex) ?? { ...producer, memTargets: [...producer.memTargets], resultLengths: [...producer.resultLengths], returnOffsets: [...producer.returnOffsets] };
+            t.memTargets.push(memTarget);
+            t.resultLengths.push(descriptor.size);
+            t.returnOffsets.push(descriptor.offset);
+            trial.set(descriptor.callIndex, t);
+        }
+        for (const [index, t] of trial) encodeOffset(t, index, 0);
+        // each call with msg.value takes one `values` entry; the index field is 8 bits
+        if (msgValue > 0n && this.calls.filter((c) => c.msgValue > 0n).length >= 0xFF) {
+            throw new Error("msgValueIndex too large: at most 255 calls with msg.value per batch");
+        }
         for (const { descriptor, target: memTarget } of patches) {
             const producer = this.calls[descriptor.callIndex];
             producer.memTargets.push(memTarget);
             producer.resultLengths.push(descriptor.size);
             producer.returnOffsets.push(descriptor.offset);
-            producer.returnDataSize = Math.max(producer.returnDataSize, descriptor.offset + descriptor.size);
         }
 
         this.calls.push({
@@ -334,7 +390,6 @@ export class TransactionBuilder {
             memTargets: [],
             resultLengths: [],
             returnOffsets: [],
-            returnDataSize: 0,
             msgValue,
             functionName,
         });
@@ -342,7 +397,7 @@ export class TransactionBuilder {
         const outputs = bindOwner(layoutTuple(this.calls.length - 1, fn.outputs, 0, null), this);
         if (fn.outputs.length !== 1) return outputs;
         const only = outputs[0];
-        if (only instanceof Descriptor) return only;
+        if (only instanceof Descriptor || Array.isArray(only)) return only;
         // sole struct output: positional array that also answers to field names
         const positional = Object.values(only);
         for (const key of Object.keys(only)) {
@@ -361,34 +416,12 @@ export class TransactionBuilder {
         this.calls.forEach((call, i) => {
             targets.push(call.target);
             calldatas.push(call.fnCalldata);
-
-            const vars = call.memTargets.length;
-            if (vars > PARTIAL_RETURN_VARS) {
-                throw new Error(`Call #${i}: Too many variables (${vars}) from one call; at most ${PARTIAL_RETURN_VARS} return-value slices can be used per call`);
-            }
-            for (let j = 0; j < call.returnOffsets.length; j++) {
-                if (Number(call.returnOffsets[j]) + Number(call.resultLengths[j]) > Number(call.returnDataSize)) {
-                    throw new Error(`Call #${i} variable ${j}: return data slice exceeds returnDataSize`);
-                }
-            }
-
-            const flag = Number(call.calltype_flag);
-            if (flag === Number(STATIC_CALL_FLAG)) {
-                offsets.push(vars > 0
-                    ? staticCallPartialReturn(call.memTargets, call.resultLengths, call.returnOffsets, call.returnDataSize)
-                    : staticCall(0, 0));
-                return;
-            }
-            if (flag !== Number(CALL_FLAG)) throw new Error(`Call #${i}: Invalid calltype flag: ${call.calltype_flag}`);
-
             let msgValueIndex = 0;
             if (call.msgValue > 0n) {
                 msgValues.push(call.msgValue);
                 msgValueIndex = msgValues.length;
             }
-            offsets.push(vars > 0
-                ? callPartialReturn(msgValueIndex, call.memTargets, call.resultLengths, call.returnOffsets, call.returnDataSize)
-                : stateChangingCall(msgValueIndex));
+            offsets.push(encodeOffset(call, i, msgValueIndex));
         });
 
         const packed = "0x" + calldatas.map(data => {

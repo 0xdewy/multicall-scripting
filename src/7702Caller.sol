@@ -15,6 +15,11 @@ import {MulticallScripter} from "./MulticallScripter.sol";
 /// The only storage is `nonce`, which lives in the delegating EOA's account. There is no owner
 /// list, entry point or admin function to misconfigure. Unlike the bare executor this contract
 /// accepts ETH, so a script can unwrap WETH into the account.
+///
+/// Delegation gives the EOA code, and many protocols treat any address with code as a contract:
+/// Permit2, Seaport and similar verify its signatures through ERC-1271, and ERC-721 / ERC-1155
+/// safe transfers call receiver hooks. The account implements both so it keeps working with them:
+/// `isValidSignature` accepts exactly the signatures the EOA key would pass with `ecrecover`.
 contract SevenSevenZeroTwoCaller is MulticallScripter {
     /// @dev 0x82b42900
     error Unauthorized();
@@ -22,6 +27,8 @@ contract SevenSevenZeroTwoCaller is MulticallScripter {
     error SignatureExpired();
     /// @dev 0x8baa579f
     error InvalidSignature();
+    /// @dev 0x756688fe
+    error InvalidNonce();
 
     bytes32 private constant DOMAIN_TYPEHASH =
         keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
@@ -39,6 +46,39 @@ contract SevenSevenZeroTwoCaller is MulticallScripter {
     }
 
     receive() external payable override {}
+
+    /// @notice Skip the signature nonce forward to `newNonce`, cancelling every pending signature
+    /// below it, including future-nonce ones. Only the account itself may call.
+    function invalidateNonces(uint256 newNonce) external {
+        if (msg.sender != address(this)) revert Unauthorized();
+        if (newNonce <= nonce()) revert InvalidNonce();
+        assembly ("memory-safe") { sstore(NONCE_SLOT, newNonce) }
+    }
+
+    /// @notice ERC-1271. Valid exactly when the account's own key signed `hash` (65-byte or
+    /// EIP-2098 64-byte signature), matching what an undelegated EOA passes via `ecrecover`.
+    function isValidSignature(bytes32 hash, bytes calldata signature) external view returns (bytes4) {
+        return _recover(hash, signature) == address(this) ? bytes4(0x1626ba7e) : bytes4(0xffffffff);
+    }
+
+    /// @notice ERC-721 / ERC-1155 receiver hooks: `onERC721Received`, `onERC1155Received` and
+    /// `onERC1155BatchReceived` return their own selector. Handled here rather than as functions
+    /// to keep the selector table (paid on every call) small. Anything else reverts.
+    fallback() external {
+        assembly ("memory-safe") {
+            let sig := shr(224, calldataload(0))
+            if or(eq(sig, 0x150b7a02), or(eq(sig, 0xf23a6e61), eq(sig, 0xbc197c81))) {
+                mstore(0x00, shl(224, sig))
+                return(0x00, 0x20)
+            }
+            revert(0x00, 0x00)
+        }
+    }
+
+    /// @notice ERC-165: ERC-165 itself, ERC-721 receiver and ERC-1155 receiver.
+    function supportsInterface(bytes4 interfaceId) external pure returns (bool) {
+        return interfaceId == 0x01ffc9a7 || interfaceId == 0x150b7a02 || interfaceId == 0x4e2312e0;
+    }
 
     /// @notice Run a batch as this account. Only the account itself may call (EOA self-call).
     function execute(
@@ -93,13 +133,25 @@ contract SevenSevenZeroTwoCaller is MulticallScripter {
         return keccak256(abi.encode(DOMAIN_TYPEHASH, NAME_HASH, VERSION_HASH, block.chainid, address(this)));
     }
 
-    function _recover(bytes32 digest, bytes calldata signature) private pure returns (address signer) {
-        if (signature.length != 65) revert InvalidSignature();
-        bytes32 r = bytes32(signature[0:32]);
-        bytes32 s = bytes32(signature[32:64]);
-        uint8 v = uint8(signature[64]);
-        if (v < 27) v += 27;
-        signer = ecrecover(digest, v, r, s);
-        if (signer == address(0)) revert InvalidSignature();
+    /// @dev Signer of `digest`, or address(0) for a malformed or invalid signature. Accepts 65-byte
+    /// [r][s][v] (v may be 0/1 or 27/28) and EIP-2098 64-byte [r][yParity|s] signatures.
+    function _recover(bytes32 digest, bytes calldata signature) private pure returns (address) {
+        bytes32 r;
+        bytes32 s;
+        uint8 v;
+        if (signature.length == 65) {
+            r = bytes32(signature[0:32]);
+            s = bytes32(signature[32:64]);
+            v = uint8(signature[64]);
+            if (v < 27) v += 27;
+        } else if (signature.length == 64) {
+            r = bytes32(signature[0:32]);
+            bytes32 vs = bytes32(signature[32:64]);
+            s = vs & bytes32(type(uint256).max >> 1);
+            v = uint8(uint256(vs) >> 255) + 27;
+        } else {
+            return address(0);
+        }
+        return ecrecover(digest, v, r, s);
     }
 }
