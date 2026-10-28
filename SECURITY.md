@@ -120,6 +120,15 @@ Build: the optimizer was off; it is now on (via-IR), and the compilation target 
   enforced; do not use the signature bytes as an identifier.
 - **The Rust builder** covers scalar chaining and one dynamic value per call. Nested references
   and element access are JS-only.
+- **External route builders remain untrusted input.** The Enso translator is pinned to Ethereum,
+  Weiroll 1.4.1 and an exact Enso EIP-7702 implementation code hash. It validates transaction
+  shape, caller context, Weiroll bounds, aggregate ETH spend, expected assets/recipient, decoded
+  approvals and an independent target allowlist. These checks cannot prove that arbitrary calldata
+  expresses the intended route. A translated static return also accepts extra trailing return bytes
+  that Enso's VM rejects. Fork-simulate the original and translated executions from the same block,
+  require exact input/output balance deltas and bind the result to the returned `routeHash` before
+  signing. Re-review and update the pin after any Enso deployment or format change. Cross-chain
+  completion remains outside source-chain atomicity.
 
 ## Release validation — 2026-09-05
 
